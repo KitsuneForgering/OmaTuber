@@ -13,6 +13,7 @@ use omatuber::library::{Ending, Library, Object, Sentiment, Source};
 use omatuber::library_view::LibraryView;
 use omatuber::mouth::{GateParams, Mouth};
 use omatuber::obs::{AudioInput, Connection, Status};
+use omatuber::scene::Placement;
 use omatuber::view::{self, Page, SlotView, ViewState};
 use omatuber::{example, theme};
 use uuid::Uuid;
@@ -41,6 +42,7 @@ fn base(palette: theme::Palette) -> ViewState {
         copied_at: None,
         page: Default::default(),
         remember_password: false,
+        scene_choice: None,
         secret_note: None,
         library: Default::default(),
     }
@@ -75,6 +77,9 @@ fn main() {
         level_db: f32::NEG_INFINITY,
         mouth: Mouth::Closed,
         receiving: false,
+        scenes: Default::default(),
+        placement: None,
+        scene_message: None,
     };
     let live = |level_db: f32, mouth: Mouth| Status {
         connection: Connection::Connected,
@@ -82,6 +87,9 @@ fn main() {
         level_db,
         mouth,
         receiving: true,
+        scenes: Default::default(),
+        placement: None,
+        scene_message: None,
     };
     let configured = || ViewState {
         selected: Some(mic),
@@ -168,6 +176,22 @@ fn main() {
         },
     ];
 
+    // Scene step states on the connected scenes.
+    let mut scenes = scenes;
+    let obs_scenes = omatuber::scene::Scenes {
+        names: vec!["Principal".to_owned(), "Intervalo".to_owned()],
+        program: Some("Principal".to_owned()),
+    };
+    for (name, placement) in [
+        ("2-live-talking", Placement::NotAdded),
+        ("3-live-quiet", Placement::Visible),
+        ("4-no-signal", Placement::Hidden),
+    ] {
+        let scene = scenes.iter_mut().find(|s| s.name == name).unwrap();
+        scene.status.scenes = obs_scenes.clone();
+        scene.status.placement = Some(("Principal".to_owned(), placement));
+    }
+
     // Library page: two sentiments (one on air by shortcut) and an object.
     let mut lib = Library::default();
     let mut happy = Sentiment::new("Animado");
@@ -185,7 +209,6 @@ fn main() {
     lib.objects = vec![mug];
     let mut draft = lib.clone();
     draft.sentiments[1].name = "Cansado demais".to_owned();
-    let mut scenes = scenes;
     scenes.push(Scene {
         name: "8-library",
         size: [1100.0, 1500.0],

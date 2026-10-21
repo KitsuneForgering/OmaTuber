@@ -27,6 +27,7 @@ fn state() -> ViewState {
         copied_at: None,
         page: Default::default(),
         remember_password: false,
+        scene_choice: None,
         secret_note: None,
         library: Default::default(),
     }
@@ -50,6 +51,9 @@ fn idle() -> Status {
         level_db: f32::NEG_INFINITY,
         mouth: Mouth::Closed,
         receiving: false,
+        scenes: Default::default(),
+        placement: None,
+        scene_message: None,
     }
 }
 
@@ -63,6 +67,9 @@ fn live() -> Status {
         level_db: -20.0,
         mouth: Mouth::Open,
         receiving: true,
+        scenes: Default::default(),
+        placement: None,
+        scene_message: None,
     }
 }
 
@@ -416,4 +423,59 @@ fn remember_password_checkbox_emits_its_choice() {
         h.state().1,
         [Action::SetRemember(true), Action::SetRemember(false)]
     );
+}
+
+mod scene_step {
+    use super::*;
+    use omatuber::scene::{Placement, Scenes};
+
+    fn on_scene(placement: Placement) -> Status {
+        Status {
+            connection: Connection::Connected,
+            scenes: Scenes {
+                names: vec!["Principal".to_owned(), "Intervalo".to_owned()],
+                program: Some("Principal".to_owned()),
+            },
+            placement: Some(("Principal".to_owned(), placement)),
+            ..idle()
+        }
+    }
+
+    #[test]
+    fn not_added_offers_adding_to_the_named_scene() {
+        let mut h = harness(on_scene(Placement::NotAdded));
+        h.run();
+        h.get_by_label("Adicionar à cena Principal").click();
+        h.run();
+        assert_eq!(h.state().1, [Action::AddToScene]);
+    }
+
+    #[test]
+    fn hidden_offers_showing_and_visible_offers_nothing() {
+        let mut h = harness(on_scene(Placement::Hidden));
+        h.run();
+        h.get_by_label("Mostrar no OBS").click();
+        h.run();
+        assert_eq!(h.state().1, [Action::AddToScene]);
+
+        let mut h = harness(on_scene(Placement::Visible));
+        h.run();
+        h.get_by_label("Visível na cena Principal. Avatar adicionado ao OBS");
+        assert!(h.query_by_label("Mostrar no OBS").is_none());
+        assert!(h.query_by_label("Adicionar à cena Principal").is_none());
+    }
+
+    #[test]
+    fn disconnected_never_claims_a_scene_state() {
+        let mut h = harness(Status {
+            connection: Connection::Idle,
+            ..on_scene(Placement::Visible)
+        });
+        h.run();
+        assert!(
+            h.query_by_label("Visível na cena Principal. Avatar adicionado ao OBS")
+                .is_none()
+        );
+        h.get_by_label("Na cena: não verificado. Conecte ao OBS para adicionar o avatar sozinho, ou copie a URL");
+    }
 }

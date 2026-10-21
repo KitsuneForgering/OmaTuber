@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use crate::meter::{LevelKind, level_db};
 use crate::mouth::{Gate, GateParams, Mouth};
+use crate::scene::{self, Added, BrowserSettings, Placement};
 use crate::server::Outputs;
 
 /// obs-websocket meter cadence; the gate is also ticked at this rate.
@@ -61,6 +62,12 @@ pub struct Status {
     /// gate's staleness window. False when OBS stopped reporting it, e.g. the
     /// source is not active in the current scene.
     pub receiving: bool,
+    /// Scenes in OBS, empty until connected.
+    pub scenes: scene::Scenes,
+    /// Scene the avatar is meant for and our source's state there.
+    pub placement: Option<(String, Placement)>,
+    /// Result of the last "add to scene", or why it failed.
+    pub scene_message: Option<String>,
 }
 
 pub enum Command {
@@ -73,6 +80,14 @@ pub enum Command {
     SetParams(GateParams),
     /// `Some(level)` replaces OBS levels with a fixed dBFS value.
     Simulate(Option<f32>),
+    /// Which scene the avatar is for (`None`: the one on air) and the
+    /// browser source settings to create it with.
+    SceneTarget {
+        scene: Option<String>,
+        settings: BrowserSettings,
+    },
+    /// Add the avatar to the target scene, reusing its source if present.
+    AddToScene,
 }
 
 pub struct Handle {
@@ -90,6 +105,9 @@ pub fn spawn(outputs: Outputs, notify: impl Fn() + Send + 'static) -> Handle {
         level_db: f32::NEG_INFINITY,
         mouth: Mouth::Closed,
         receiving: false,
+        scenes: scene::Scenes::default(),
+        placement: None,
+        scene_message: None,
     });
     tokio::spawn(Worker::new(outputs, status_tx, notify).run(rx));
     Handle { commands, status }
@@ -122,6 +140,7 @@ struct Worker<N> {
     connecting: Option<JoinHandle<ConnectResult>>,
     retry_at: Option<Instant>,
     retry_delay: Duration,
+    scene_target: Option<(Option<String>, BrowserSettings)>,
 }
 
 impl<N: Fn()> Worker<N> {
@@ -139,6 +158,7 @@ impl<N: Fn()> Worker<N> {
             connecting: None,
             retry_at: None,
             retry_delay: RETRY_MIN,
+            scene_target: None,
         }
     }
 
@@ -148,12 +168,15 @@ impl<N: Fn()> Worker<N> {
         loop {
             tokio::select! {
                 cmd = commands.recv() => match cmd {
-                    Some(cmd) => self.command(cmd),
+                    Some(cmd) => self.command(cmd).await,
                     None => return, // UI gone
                 },
                 _ = tick.tick() => self.tick(),
                 event = next_event(&mut self.session) => self.event(event).await,
-                result = join(&mut self.connecting) => self.connected(result),
+                result = join(&mut self.connecting) => {
+                    self.connected(result);
+                    self.refresh_scene().await;
+                }
                 _ = sleep_until_opt(self.retry_at) => {
                     self.retry_at = None;
                     self.start_connect();
@@ -166,7 +189,7 @@ impl<N: Fn()> Worker<N> {
         self.start.elapsed()
     }
 
-    fn command(&mut self, cmd: Command) {
+    async fn command(&mut self, cmd: Command) {
         match cmd {
             Command::Connect { port, password } => {
                 self.drop_connection();
@@ -192,7 +215,76 @@ impl<N: Fn()> Worker<N> {
                 self.simulate = level;
                 self.gate.reset();
             }
+            Command::SceneTarget { scene, settings } => {
+                self.scene_target = Some((scene, settings));
+                self.refresh_scene().await;
+            }
+            Command::AddToScene => self.add_to_scene().await,
         }
+    }
+
+    /// The target scene: the chosen one if it still exists, else the one on air.
+    fn target_scene(&self, scenes: &scene::Scenes) -> Option<String> {
+        let chosen = self.scene_target.as_ref()?.0.clone();
+        chosen
+            .filter(|c| scenes.names.contains(c))
+            .or_else(|| scenes.program.clone())
+    }
+
+    async fn refresh_scene(&mut self) {
+        let (Some(session), Some((_, settings))) = (&self.session, &self.scene_target) else {
+            return;
+        };
+        // Failures surface as a closed event stream; keep what is shown.
+        let Ok(scenes) = scene::scenes(&session.client).await else {
+            return;
+        };
+        let placement = match self.target_scene(&scenes) {
+            Some(target) => match scene::placement(&session.client, &target, &settings.url).await {
+                Ok(p) => Some((target, p)),
+                Err(_) => return,
+            },
+            None => None,
+        };
+        self.status.send_modify(|s| {
+            s.scenes = scenes;
+            s.placement = placement;
+        });
+        (self.notify)();
+    }
+
+    async fn add_to_scene(&mut self) {
+        let (Some(session), Some((_, settings))) = (&self.session, &self.scene_target) else {
+            return;
+        };
+        let target = self.target_scene(&self.status.borrow().scenes);
+        let Some(target) = target else {
+            self.status.send_modify(|s| {
+                s.scene_message = Some("O OBS não informou nenhuma cena".to_owned())
+            });
+            (self.notify)();
+            return;
+        };
+        let message = match scene::add(&session.client, &target, settings).await {
+            Ok(Added::Created { name }) => format!("Fonte \"{name}\" criada na cena {target}"),
+            Ok(Added::Linked { name }) => {
+                format!("Fonte \"{name}\" adicionada também à cena {target}")
+            }
+            Ok(Added::Reused {
+                name,
+                was_hidden: true,
+            }) => {
+                format!("A fonte \"{name}\" estava oculta na cena {target}; agora aparece")
+            }
+            Ok(Added::Reused { name, .. }) => {
+                format!("A fonte \"{name}\" já estava na cena {target}")
+            }
+            Err(e) => {
+                format!("O OBS recusou: {e}. Use Copiar URL e adicione uma fonte Navegador à mão.")
+            }
+        };
+        self.status.send_modify(|s| s.scene_message = Some(message));
+        self.refresh_scene().await;
     }
 
     fn tick(&mut self) {
@@ -235,7 +327,17 @@ impl<N: Fn()> Worker<N> {
             }
             Event::InputCreated { .. }
             | Event::InputRemoved { .. }
-            | Event::InputNameChanged { .. } => self.refresh_inputs().await,
+            | Event::InputNameChanged { .. } => {
+                self.refresh_inputs().await;
+                self.refresh_scene().await;
+            }
+            Event::SceneItemCreated { .. }
+            | Event::SceneItemRemoved { .. }
+            | Event::SceneItemEnableStateChanged { .. }
+            | Event::SceneCreated { .. }
+            | Event::SceneRemoved { .. }
+            | Event::SceneNameChanged { .. }
+            | Event::CurrentProgramSceneChanged { .. } => self.refresh_scene().await,
             _ => {}
         }
     }
@@ -333,7 +435,10 @@ async fn connect(port: u16, password: String) -> ConnectResult {
         dangerous: None,
         password: (!password.is_empty()).then_some(password),
         event_subscriptions: Some(
-            EventSubscription::INPUTS | EventSubscription::INPUT_VOLUME_METERS,
+            EventSubscription::INPUTS
+                | EventSubscription::SCENES
+                | EventSubscription::SCENE_ITEMS
+                | EventSubscription::INPUT_VOLUME_METERS,
         ),
         broadcast_capacity: EVENT_BUFFER,
         connect_timeout: Duration::from_secs(5),

@@ -154,6 +154,7 @@ impl App {
                 copied_at: None,
                 page: Page::Avatar,
                 remember_password: false,
+                scene_choice: saved.scene.clone(),
                 secret_note: None,
                 library: LibraryView {
                     draft: library.clone(),
@@ -175,6 +176,7 @@ impl App {
             saved: saved.clone(),
         };
         app.start_server();
+        app.update_scene_target();
         app.view.library.voice = initial_voice_view();
         app.secret_op(SecretOp::Load);
         app.load_library_textures(ctx, &library);
@@ -305,6 +307,8 @@ impl App {
                 }
             }
         }
+        // The browser source is sized like the avatar.
+        self.update_scene_target();
     }
 
     fn handle(&mut self, ctx: &egui::Context, action: Action) {
@@ -361,6 +365,11 @@ impl App {
                 }
             }
             Action::SetRemember(false) => self.secret_op(SecretOp::Forget),
+            Action::ChooseScene(scene) => {
+                self.view.scene_choice = scene;
+                self.update_scene_target();
+            }
+            Action::AddToScene => self.send(Command::AddToScene),
             Action::RecordExample(_)
             | Action::RemoveLastExample(_)
             | Action::TrainSounds
@@ -650,6 +659,27 @@ impl App {
         self.last_connection = connection.clone();
     }
 
+    /// Tells the OBS worker which scene the avatar is for and how to create
+    /// its browser source: this app's URL, sized like the "Quieto" image.
+    fn update_scene_target(&self) {
+        let Ok(url) = &self.view.server else { return };
+        let [w, h] = self
+            .view
+            .slots
+            .iter()
+            .find_map(|s| s.size)
+            .unwrap_or([512, 512]);
+        let (width, height) = omatuber::scene::source_size(w, h);
+        self.send(Command::SceneTarget {
+            scene: self.view.scene_choice.clone(),
+            settings: omatuber::scene::BrowserSettings {
+                url: url.clone(),
+                width,
+                height,
+            },
+        });
+    }
+
     /// Keyring calls may block on D-Bus or an unlock prompt: run them on a
     /// thread and report back through `secret_rx`.
     fn secret_op(&self, op: SecretOp) {
@@ -704,6 +734,7 @@ impl App {
             open_db: self.view.params.open_db,
             closed_png: self.paths[Mouth::Closed as usize].clone(),
             open_png: self.paths[Mouth::Open as usize].clone(),
+            scene: self.view.scene_choice.clone(),
         }
     }
 

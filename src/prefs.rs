@@ -17,6 +17,8 @@ pub struct Prefs {
     pub open_db: f32,
     pub closed_png: Option<PathBuf>,
     pub open_png: Option<PathBuf>,
+    /// Scene to add the avatar to; `None` is the one on air.
+    pub scene: Option<String>,
 }
 
 impl Default for Prefs {
@@ -27,6 +29,7 @@ impl Default for Prefs {
             open_db: crate::mouth::GateParams::default().open_db,
             closed_png: None,
             open_png: None,
+            scene: None,
         }
     }
 }
@@ -102,6 +105,7 @@ mod tests {
             open_db: -27.0,
             closed_png: Some("/a/closed.png".into()),
             open_png: None,
+            scene: Some("Principal".to_owned()),
         };
         save(&path, &prefs).unwrap();
         assert_eq!(load(&path).unwrap(), prefs);

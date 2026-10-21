@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::library_view::{FileTarget, LibraryView};
 use crate::mouth::{GateParams, Mouth};
 use crate::obs::{Connection, Status};
+use crate::scene::Placement;
 use crate::theme::Palette;
 
 /// Gap between the open and close thresholds, in dB.
@@ -76,6 +77,8 @@ pub struct ViewState {
     /// Keep the OBS password in the system keyring (plan: "Lembrar neste
     /// computador"); never in preferences.
     pub remember_password: bool,
+    /// Scene to add the avatar to; `None` means the one on air.
+    pub scene_choice: Option<String>,
     /// Why remembering is unavailable or what just happened to the stored
     /// password; `None` when there is nothing to say.
     pub secret_note: Option<String>,
@@ -109,6 +112,9 @@ pub enum Action {
     SetVoice(bool),
     /// Remember (store after the next successful connection) or forget.
     SetRemember(bool),
+    ChooseScene(Option<String>),
+    /// Create, link or re-show the avatar's browser source in the scene.
+    AddToScene,
     /// Record one 2.5 s example of this sound.
     RecordExample(String),
     RemoveLastExample(String),
@@ -855,26 +861,100 @@ fn checklist_card(
         step_row(ui, &p, step, title, detail, false);
         divider(ui, &p);
 
-        // Scene: not queried from OBS yet, so never claimed.
-        match &s.server {
+        // Scene: verified through OBS when connected, never assumed.
+        let server = s.server.clone();
+        match &server {
             Ok(url) => {
-                step_row(
-                    ui,
-                    &p,
-                    Step::Waiting,
-                    "Na cena: não verificado",
-                    "No OBS, adicione uma fonte Navegador com esta URL",
-                    false,
-                );
+                let connected = status.connection == Connection::Connected;
+                let program = status.scenes.program.as_deref();
+                match (&status.placement, connected) {
+                    (Some((scene, Placement::Visible)), true) => {
+                        let detail = if program.is_some_and(|p| p != scene) {
+                            "Pronto nesta cena; outra cena está no ar"
+                        } else {
+                            "Avatar adicionado ao OBS"
+                        };
+                        step_row(
+                            ui,
+                            &p,
+                            Step::Done,
+                            &format!("Visível na cena {scene}"),
+                            detail,
+                            false,
+                        );
+                    }
+                    (Some((scene, Placement::Hidden)), true) => {
+                        step_row(
+                            ui,
+                            &p,
+                            Step::Problem,
+                            &format!("Oculto na cena {scene}"),
+                            "A fonte existe, mas está desligada no OBS",
+                            false,
+                        );
+                        indented(ui, |ui| {
+                            if ui.add(accent_button(&p, "Mostrar no OBS")).clicked() {
+                                actions.push(Action::AddToScene);
+                            }
+                        });
+                    }
+                    (Some((scene, Placement::NotAdded)), true) => {
+                        step_row(
+                            ui,
+                            &p,
+                            Step::Waiting,
+                            "Ainda não adicionado",
+                            "O OmaTuber cria uma fonte Navegador com a URL e o tamanho do avatar",
+                            false,
+                        );
+                        keep_open_hint(ui, &p);
+                        indented(ui, |ui| {
+                            if ui
+                                .add(accent_button(&p, &format!("Adicionar à cena {scene}")))
+                                .clicked()
+                            {
+                                actions.push(Action::AddToScene);
+                            }
+                        });
+                    }
+                    (None, true) => {
+                        step_row(ui, &p, Step::Waiting, "Verificando a cena…", "", false);
+                    }
+                    (_, false) => {
+                        step_row(
+                            ui,
+                            &p,
+                            Step::Waiting,
+                            "Na cena: não verificado",
+                            "Conecte ao OBS para adicionar o avatar sozinho, ou copie a URL",
+                            false,
+                        );
+                    }
+                }
+                if connected && status.scenes.names.len() > 1 {
+                    indented(ui, |ui| scene_picker(ui, s, status, actions));
+                }
+                if let Some(msg) = &status.scene_message {
+                    indented(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(msg.as_str()).small().color(p.muted))
+                                .wrap(),
+                        );
+                    });
+                }
                 let copied = s.copied_at.is_some_and(|t| ui.input(|i| i.time) - t < 1.5);
-                ui.horizontal(|ui| {
-                    ui.add_space(36.0);
-                    let label = if copied { "URL copiada" } else { "Copiar URL" };
-                    if ui
-                        .add(accent_button(&p, label))
-                        .on_hover_text(url.as_str())
-                        .clicked()
-                    {
+                indented(ui, |ui| {
+                    let label = match (copied, connected) {
+                        (true, _) => "URL copiada",
+                        (false, true) => "Ou copiar URL",
+                        (false, false) => "Copiar URL",
+                    };
+                    let button = if connected {
+                        egui::Button::new(label)
+                    } else {
+                        accent_button(&p, label)
+                    };
+                    if ui.add(button).on_hover_text(url.as_str()).clicked() {
                         ui.ctx().copy_text(url.clone());
                         s.copied_at = Some(ui.input(|i| i.time));
                     }
@@ -885,19 +965,9 @@ fn checklist_card(
                             .color(p.muted),
                     );
                 });
-                ui.horizontal(|ui| {
-                    ui.add_space(36.0);
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(
-                                "Mantenha o OmaTuber aberto durante a transmissão; pode minimizá-lo.",
-                            )
-                            .small()
-                            .color(p.muted),
-                        )
-                        .wrap(),
-                    );
-                });
+                if !connected {
+                    keep_open_hint(ui, &p);
+                }
                 if copied {
                     ui.ctx()
                         .request_repaint_after(std::time::Duration::from_millis(300));
@@ -914,6 +984,49 @@ fn checklist_card(
             }
         }
     });
+}
+
+/// Row content aligned with the step text, past the icon column.
+fn indented(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.add_space(36.0);
+        add(ui);
+    });
+}
+
+/// Plan: shown before the source is added to a scene.
+fn keep_open_hint(ui: &mut egui::Ui, p: &Palette) {
+    indented(ui, |ui| {
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    "Mantenha o OmaTuber aberto durante a transmissão; pode minimizá-lo.",
+                )
+                .small()
+                .color(p.muted),
+            )
+            .wrap(),
+        );
+    });
+}
+
+fn scene_picker(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: &mut Vec<Action>) {
+    let label = ui.label("Cena");
+    let on_air = "A que estiver no ar";
+    let before = s.scene_choice.clone();
+    egui::ComboBox::from_id_salt("scene-choice")
+        .selected_text(s.scene_choice.as_deref().unwrap_or(on_air))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut s.scene_choice, None, on_air);
+            for name in &status.scenes.names {
+                ui.selectable_value(&mut s.scene_choice, Some(name.clone()), name);
+            }
+        })
+        .response
+        .labelled_by(label.id);
+    if s.scene_choice != before {
+        actions.push(Action::ChooseScene(s.scene_choice.clone()));
+    }
 }
 
 fn divider(ui: &mut egui::Ui, p: &Palette) {

@@ -50,3 +50,7 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+# Full debug info for every dependency, across the default, `sound`, test
+# and example builds, filled the disk (target/ reached 66 GB). Backtraces
+# into dependencies are rarely needed; our own crate keeps full debug info.
+debug = false

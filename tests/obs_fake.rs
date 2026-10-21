@@ -581,3 +581,55 @@ async fn renamed_source_is_still_recognised_and_names_never_clash() {
     );
     assert_eq!(world.lock().unwrap().ours().len(), 1);
 }
+
+#[tokio::test]
+async fn worker_adds_to_the_scene_on_air_and_reports_placement() {
+    let (port, _obs, world) = fake_obs("certa").await;
+    let worker = obs::spawn(Outputs::default(), || {});
+    let mut status = worker.status.clone();
+    worker
+        .commands
+        .send(Command::SceneTarget {
+            scene: None,
+            settings: settings(),
+        })
+        .unwrap();
+    worker.commands.send(connect(port, "certa")).unwrap();
+    let s = wait_for(&mut status, "placement known", |s| s.placement.is_some()).await;
+    assert_eq!(s.scenes.program.as_deref(), Some("Principal"));
+    assert_eq!(
+        s.placement,
+        Some(("Principal".to_owned(), Placement::NotAdded))
+    );
+
+    worker.commands.send(Command::AddToScene).unwrap();
+    let s = wait_for(&mut status, "visible", |s| {
+        s.placement
+            .as_ref()
+            .is_some_and(|(_, p)| *p == Placement::Visible)
+    })
+    .await;
+    assert_eq!(
+        s.scene_message.as_deref(),
+        Some("Fonte \"OmaTuber\" criada na cena Principal")
+    );
+
+    // A chosen scene other than the one on air.
+    worker
+        .commands
+        .send(Command::SceneTarget {
+            scene: Some("Intervalo".to_owned()),
+            settings: settings(),
+        })
+        .unwrap();
+    wait_for(&mut status, "intervalo", |s| {
+        s.placement == Some(("Intervalo".to_owned(), Placement::NotAdded))
+    })
+    .await;
+    worker.commands.send(Command::AddToScene).unwrap();
+    wait_for(&mut status, "linked", |s| {
+        s.placement == Some(("Intervalo".to_owned(), Placement::Visible))
+    })
+    .await;
+    assert_eq!(world.lock().unwrap().ours().len(), 1);
+}
