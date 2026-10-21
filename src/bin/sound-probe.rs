@@ -18,21 +18,19 @@
 //! clicks, music). `fala` and `outros` are background: they compete in the
 //! classifier but never fire a reaction.
 
-use std::collections::BTreeMap;
 use std::env;
-use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use omatuber::capture;
 use omatuber::sound::{
-    Analyzer, BACKGROUND, Detector, Features, Model, SAMPLE_RATE, SILENCE_DB, WINDOW_HOP_SAMPLES,
-    WINDOW_SAMPLES, argmax, data_dir, leave_one_out, rms_db,
+    Analyzer, BACKGROUND, Detector, Model, SAMPLE_RATE, SILENCE_DB, WINDOW_HOP_SAMPLES,
+    WINDOW_SAMPLES, argmax, data_dir, rms_db,
 };
+use omatuber::{capture, training};
 
 const USAGE: &str = "usage: sound-probe levels [seconds] | record <class> [clips] [seconds] | train | \
                      live [min_probability] [confirm_windows] | classify <file.wav>";
@@ -119,27 +117,15 @@ fn levels(secs: f32) -> Result<(), String> {
 }
 
 fn record(class: &str, clips: usize, secs: f32) -> Result<(), String> {
-    if class.is_empty()
-        || !class
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-    {
+    if !training::valid_class(class) {
         return Err(format!("class must be letters, digits, - or _: {class:?}"));
     }
-    let dir = data_dir()?.join("sounds").join(class);
-    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let mut next = fs::read_dir(&dir)
-        .map_err(|e| e.to_string())?
-        .filter_map(|e| e.ok()?.path().file_stem()?.to_str()?.parse::<usize>().ok())
-        .max()
-        .map_or(1, |n| n + 1);
-
+    let data = data_dir()?;
     let rx = open_mic()?;
-    let mut analyzer = Analyzer::new();
     let n = (secs * SAMPLE_RATE as f32) as usize;
     println!(
         "recording {clips} clips of {secs} s for \"{class}\" into {}",
-        dir.display()
+        training::sounds_dir(&data).join(class).display()
     );
     for i in 1..=clips {
         for count in (1..=3).rev() {
@@ -151,148 +137,40 @@ fn record(class: &str, clips: usize, secs: f32) -> Result<(), String> {
         print!("\rclip {i}/{clips}: NOW   ");
         let _ = std::io::stdout().flush();
         let samples = take(&rx, n)?;
-        let windows = analyzer.clip(&samples, SILENCE_DB).len();
-        if windows == 0 {
-            println!(
-                "\rclip {i}/{clips}: too quiet ({:.0} dB), not saved",
+        match training::save_clip(&data, class, &samples) {
+            Ok(path) => println!(
+                "\rclip {i}/{clips}: saved {} ({:.0} dB)",
+                path.file_name().unwrap().to_string_lossy(),
                 rms_db(&samples)
-            );
-            continue;
+            ),
+            Err(e) => println!("\rclip {i}/{clips}: {e}"),
         }
-        let path = dir.join(format!("{next:03}.wav"));
-        write_wav(&path, &samples)?;
-        println!(
-            "\rclip {i}/{clips}: saved {} ({:.0} dB, {windows} windows)",
-            path.file_name().unwrap().to_string_lossy(),
-            rms_db(&samples)
-        );
-        next += 1;
     }
     Ok(())
 }
 
-fn write_wav(path: &Path, samples: &[f32]) -> Result<(), String> {
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: SAMPLE_RATE as u32,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut w = hound::WavWriter::create(path, spec).map_err(|e| e.to_string())?;
-    for s in samples {
-        w.write_sample((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-            .map_err(|e| e.to_string())?;
-    }
-    w.finalize().map_err(|e| e.to_string())
-}
-
-fn read_wav(path: &Path) -> Result<Vec<f32>, String> {
-    let mut r = hound::WavReader::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let spec = r.spec();
-    if spec.sample_rate != SAMPLE_RATE as u32 || spec.channels != 1 {
-        return Err(format!(
-            "{}: need 16 kHz mono, got {} Hz × {} channels; convert with \
-             `ffmpeg -i in -ar 16000 -ac 1 out.wav`",
-            path.display(),
-            spec.sample_rate,
-            spec.channels
-        ));
-    }
-    match spec.sample_format {
-        hound::SampleFormat::Float => r
-            .samples::<f32>()
-            .map(|s| s.map_err(|e| e.to_string()))
-            .collect(),
-        hound::SampleFormat::Int => {
-            let scale = (1u32 << (spec.bits_per_sample - 1)) as f32;
-            r.samples::<i32>()
-                .map(|s| s.map(|v| v as f32 / scale).map_err(|e| e.to_string()))
-                .collect()
-        }
-    }
-}
-
-/// Every recorded clip, by class name, sorted.
-fn load_clips() -> Result<BTreeMap<String, Vec<PathBuf>>, String> {
-    let root = data_dir()?.join("sounds");
-    let mut out = BTreeMap::new();
-    let entries = fs::read_dir(&root)
-        .map_err(|e| format!("{}: {e}; record some examples first", root.display()))?;
-    for class in entries.filter_map(Result::ok).filter(|e| e.path().is_dir()) {
-        let mut files: Vec<PathBuf> = fs::read_dir(class.path())
-            .map_err(|e| e.to_string())?
-            .filter_map(|e| Some(e.ok()?.path()))
-            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
-            .collect();
-        files.sort();
-        if !files.is_empty() {
-            out.insert(class.file_name().to_string_lossy().into_owned(), files);
-        }
-    }
-    if out.len() < 2 {
-        return Err(format!("need at least two classes in {}", root.display()));
-    }
-    Ok(out)
-}
-
 fn train() -> Result<(), String> {
-    let by_class = load_clips()?;
-    let classes: Vec<String> = by_class.keys().cloned().collect();
-    let mut analyzer = Analyzer::new();
-    let mut clips: Vec<(usize, Vec<Features>)> = Vec::new();
-    for (c, files) in by_class.values().enumerate() {
-        let mut windows = 0;
-        for f in files {
-            let w = analyzer.clip(&read_wav(f)?, SILENCE_DB);
-            windows += w.len();
-            clips.push((c, w));
-        }
+    let data = data_dir()?;
+    let report = training::train(&data)?;
+    println!("leave-one-clip-out, per class (recognised / clips):");
+    for (i, class) in report.classes.iter().enumerate() {
         println!(
-            "{:>10}: {:3} clips, {:4} windows",
-            classes[c],
-            files.len(),
-            windows
+            "{:>10}: {:3} / {:3}",
+            truncate(class, 10),
+            report.correct[i],
+            report.clips[i]
         );
     }
-
-    let confusion = leave_one_out(&classes, &clips)?;
-    println!("\nleave-one-clip-out (rows: recorded as, columns: classified as)");
-    print!("{:>10}", "");
-    for c in &classes {
-        print!(" {:>8}", truncate(c, 8));
-    }
-    println!();
-    let (mut right, mut total) = (0, 0);
-    for (i, row) in confusion.iter().enumerate() {
-        print!("{:>10}", truncate(&classes[i], 10));
-        for (j, n) in row.iter().enumerate() {
-            print!(" {:>8}", n);
-            total += n;
-            if i == j {
-                right += n;
-            }
-        }
-        println!();
-    }
+    let (right, total) = report.right_total();
     println!(
         "accuracy: {right}/{total} clips ({:.0}%)",
         100.0 * right as f32 / total.max(1) as f32
     );
-
-    let all: Vec<(usize, Features)> = clips
-        .iter()
-        .flat_map(|(c, ws)| ws.iter().map(move |w| (*c, *w)))
-        .collect();
-    let model = Model::train(classes, &all)?;
-    let path = data_dir()?.join("bayes.json");
-    let tmp = path.with_extension("json.tmp");
-    fs::write(
-        &tmp,
-        serde_json::to_string_pretty(&model).map_err(|e| e.to_string())?,
-    )
-    .and_then(|()| fs::rename(&tmp, &path))
-    .map_err(|e| format!("{}: {e}", path.display()))?;
-    println!("model saved to {}", path.display());
+    for w in &report.warnings {
+        println!("warning: {w}");
+    }
+    training::accept(&data, &report.model)?;
+    println!("model saved to {}", training::model_path(&data).display());
     Ok(())
 }
 
@@ -364,7 +242,7 @@ fn live(min_p: f32, confirm: usize) -> Result<(), String> {
 
 fn classify(file: &Path) -> Result<(), String> {
     let model = load_model()?;
-    let samples = read_wav(file)?;
+    let samples = training::read_wav(file)?;
     let mut analyzer = Analyzer::new();
     if samples.len() < WINDOW_SAMPLES {
         return Err("file is shorter than one 0.5 s window".into());
