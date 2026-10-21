@@ -370,7 +370,13 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
                 }
                 (t, size)
             });
-        if let Some((texture, [w, h])) = sentiment_image(s, shown).or(base) {
+        let sentiment = sentiment_image(s, shown, now).map(|(t, size, next)| {
+            if let Some(next) = next {
+                ui.ctx().request_repaint_after(next);
+            }
+            (t, size)
+        });
+        if let Some((texture, [w, h])) = sentiment.or(base) {
             let inner = stage.shrink(16.0);
             let scale = (inner.width() / w as f32).min(inner.height() / h as f32);
             let img = Rect::from_center_size(inner.center(), vec2(w as f32, h as f32) * scale);
@@ -382,11 +388,16 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
                 let Some(o) = lib.applied.object(*id) else {
                     continue;
                 };
-                let Some((tex, [ow, oh])) = lib.textures.get(&o.file) else {
+                let Some(picture) = lib.textures.get(&o.file) else {
                     continue;
                 };
+                let (tex, next) = picture.at(since(now, lib.objects_since));
+                if let Some(next) = next {
+                    ui.ctx().request_repaint_after(next);
+                }
+                let [ow, oh] = picture.size.map(|v| v as f32);
                 let width = o.scale * img.width();
-                let size = vec2(width, width * *oh as f32 / *ow as f32);
+                let size = vec2(width, width * oh / ow);
                 let center = img.min + vec2(o.x * img.width(), o.y * img.height());
                 painter.image(
                     tex.id(),
@@ -436,12 +447,24 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
 
 /// The active sentiment's image for this mouth, chosen as the browser page
 /// does: talking image with an open mouth if there is one, else quiet.
-fn sentiment_image(s: &ViewState, shown: Mouth) -> Option<(&TextureHandle, [u32; 2])> {
+/// Its animation runs from the last trigger, like the page's fresh image.
+fn sentiment_image(
+    s: &ViewState,
+    shown: Mouth,
+    now: f64,
+) -> Option<(&TextureHandle, [u32; 2], Option<Duration>)> {
     let lib = &s.library;
     let sentiment = lib.applied.sentiment(lib.active?.0)?;
     let talking = sentiment.talking.as_ref().filter(|_| shown == Mouth::Open);
     let file = talking.or(sentiment.quiet.as_ref())?;
-    lib.textures.get(file).map(|(t, size)| (t, *size))
+    let picture = lib.textures.get(file)?;
+    let (texture, next) = picture.at(since(now, lib.active_since));
+    Some((texture, picture.size, next))
+}
+
+/// Time from UI timestamp `start` to `now`, never negative.
+fn since(now: f64, start: f64) -> Duration {
+    Duration::from_secs_f64((now - start).max(0.0))
 }
 
 /// "Animado · Atalho" while a sentiment is on air.
@@ -545,7 +568,7 @@ fn overlay_pill(
 fn thumbnails(ui: &mut egui::Ui, s: &mut ViewState, shown: Mouth, actions: &mut Vec<Action>) {
     let p = s.palette;
     // While a sentiment fills the stage, neither base image is on screen.
-    let sentiment_on = sentiment_image(s, shown).is_some();
+    let sentiment_on = sentiment_image(s, shown, ui.input(|i| i.time)).is_some();
     let gap = 12.0;
     let width = ui.available_width();
     let w = (width - gap) / 2.0;

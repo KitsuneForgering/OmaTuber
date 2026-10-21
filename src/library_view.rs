@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use eframe::egui::{
     self, Color32, CornerRadius, Pos2, Rect, RichText, Sense, TextureHandle, Vec2, pos2, vec2,
@@ -16,6 +17,26 @@ use uuid::Uuid;
 use crate::library::{Ending, Library, Object, Sentiment, Source};
 use crate::theme::Palette;
 use crate::view::{Action, ViewState};
+
+/// A decoded library image: one frame for a still, several for APNG/GIF.
+pub struct Picture {
+    /// Never empty. Delays are zero for a still image.
+    pub frames: Vec<(TextureHandle, Duration)>,
+    pub size: [u32; 2],
+}
+
+impl Picture {
+    pub fn first(&self) -> &TextureHandle {
+        &self.frames[0].0
+    }
+
+    /// Frame `elapsed` into the loop, and time until the next one.
+    pub fn at(&self, elapsed: Duration) -> (&TextureHandle, Option<Duration>) {
+        let delays: Vec<Duration> = self.frames.iter().map(|(_, d)| *d).collect();
+        let (i, next) = crate::avatar::frame_index(&delays, elapsed);
+        (&self.frames[i].0, next)
+    }
+}
 
 /// Which file a picker result belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,8 +55,12 @@ pub struct LibraryView {
     pub errors: HashMap<Uuid, String>,
     pub active: Option<(Uuid, Source)>,
     pub objects_on: Vec<Uuid>,
-    /// First frame of each library file, for thumbnails and the preview.
-    pub textures: HashMap<PathBuf, (TextureHandle, [u32; 2])>,
+    /// Every frame of each library file, for thumbnails and the preview.
+    pub textures: HashMap<PathBuf, Picture>,
+    /// UI time the current sentiment was (re)triggered and the objects last
+    /// changed: animations restart there, as on the browser page.
+    pub active_since: f64,
+    pub objects_since: f64,
     pub save_error: Option<String>,
     pub voice: VoiceView,
 }
@@ -650,7 +675,7 @@ fn file_row(
 }
 
 /// 56 px checkerboard thumbnail of a library image, or an empty square.
-fn thumb(ui: &mut egui::Ui, p: &Palette, texture: Option<&(TextureHandle, [u32; 2])>) {
+fn thumb(ui: &mut egui::Ui, p: &Palette, picture: Option<&Picture>) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, CornerRadius::same(8), p.sunken);
@@ -661,14 +686,50 @@ fn thumb(ui: &mut egui::Ui, p: &Palette, texture: Option<&(TextureHandle, [u32; 
             painter.rect_filled(Rect::from_min_size(min, Vec2::splat(SQ)), 0.0, p.checker);
         }
     }
-    if let Some((texture, [w, h])) = texture {
-        let scale = (rect.width() / *w as f32).min(rect.height() / *h as f32);
-        let img = Rect::from_center_size(rect.center(), vec2(*w as f32, *h as f32) * scale);
+    if let Some(picture) = picture {
+        let [w, h] = picture.size.map(|v| v as f32);
+        let scale = (rect.width() / w).min(rect.height() / h);
+        let img = Rect::from_center_size(rect.center(), vec2(w, h) * scale);
         painter.image(
-            texture.id(),
+            picture.first().id(),
             img,
             Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
             Color32::WHITE,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::{ColorImage, Context, TextureOptions};
+
+    #[test]
+    fn picture_animates_from_its_restart_point() {
+        let ctx = Context::default();
+        let tex = |n: &str| {
+            ctx.load_texture(
+                n,
+                ColorImage::new([1, 1], vec![Color32::RED]),
+                TextureOptions::LINEAR,
+            )
+        };
+        let (a, b) = (tex("a"), tex("b"));
+        let ms = Duration::from_millis;
+        let animated = Picture {
+            frames: vec![(a.clone(), ms(100)), (b.clone(), ms(100))],
+            size: [1, 1],
+        };
+        assert_eq!(animated.at(ms(0)).0.id(), a.id());
+        assert_eq!(animated.at(ms(150)).0.id(), b.id());
+        assert_eq!(animated.at(ms(150)).1, Some(ms(50)));
+        assert_eq!(animated.at(ms(200)).0.id(), a.id(), "loops");
+        let still = Picture {
+            frames: vec![(a.clone(), Duration::ZERO)],
+            size: [1, 1],
+        };
+        let (frame, next) = still.at(ms(999));
+        assert_eq!((frame.id(), next), (a.id(), None));
+        assert_eq!(still.first().id(), a.id());
     }
 }

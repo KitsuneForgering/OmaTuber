@@ -275,10 +275,13 @@ fn main() {
                             TextureOptions::LINEAR,
                         );
                         let file = if open { "falando.png" } else { "quieto.png" };
-                        state
-                            .library
-                            .textures
-                            .insert(file.into(), (tex, [size[0] as u32, size[1] as u32]));
+                        state.library.textures.insert(
+                            file.into(),
+                            omatuber::library_view::Picture {
+                                frames: vec![(tex, std::time::Duration::ZERO)],
+                                size: [size[0] as u32, size[1] as u32],
+                            },
+                        );
                         state.slots[i].texture = Some(ui.ctx().load_texture(
                             format!("f{i}"),
                             color,

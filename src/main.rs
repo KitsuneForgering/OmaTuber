@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::Duration;
 
 use eframe::egui::{self, TextureOptions};
 use omatuber::avatar::{self, LoadError, Png};
@@ -68,6 +69,8 @@ struct App {
     secret_rx: Receiver<Result<SecretDone, String>>,
     lib_tx: Sender<LibLoaded>,
     lib_rx: Receiver<LibLoaded>,
+    /// Reaction triggers already seen, to notice a new one.
+    seen_triggers: u64,
     last_connection: Connection,
     prefs_path: Option<PathBuf>,
     /// Last state written to disk; a save happens when the current one differs.
@@ -166,6 +169,7 @@ impl App {
             secret_rx,
             lib_tx,
             lib_rx,
+            seen_triggers: 0,
             last_connection: Connection::Idle,
             prefs_path,
             saved: saved.clone(),
@@ -326,7 +330,7 @@ impl App {
                         .pick_file();
                     if let Some(path) = picked {
                         let _ = tx.send(LibLoaded::Picked(target, path.clone()));
-                        let _ = tx.send(LibLoaded::Texture(path.clone(), first_frame(&path)));
+                        let _ = tx.send(LibLoaded::Texture(path.clone(), all_frames(&path)));
                         ctx.request_repaint();
                     }
                 });
@@ -553,10 +557,17 @@ impl App {
         while let Ok(msg) = self.lib_rx.try_recv() {
             match msg {
                 LibLoaded::Picked(target, path) => self.view.library.set_file(target, path),
-                LibLoaded::Texture(path, Ok((image, size))) => {
-                    let name = format!("library-{}", path.display());
-                    let texture = ctx.load_texture(name, image, TextureOptions::LINEAR);
-                    self.view.library.textures.insert(path, (texture, size));
+                LibLoaded::Texture(path, Ok((images, size))) => {
+                    let frames = images
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, (image, delay))| {
+                            let name = format!("library-{}-{i}", path.display());
+                            (ctx.load_texture(name, image, TextureOptions::LINEAR), delay)
+                        })
+                        .collect();
+                    let picture = omatuber::library_view::Picture { frames, size };
+                    self.view.library.textures.insert(path, picture);
                 }
                 // The reactions task reports the reason next to the item.
                 LibLoaded::Texture(_, Err(_)) => {}
@@ -579,7 +590,17 @@ impl App {
             }
         }
         let status = self.reactions.status.borrow().clone();
+        let now = ctx.input(|i| i.time);
         let lib = &mut self.view.library;
+        // Restart points for preview animations, matching the page: a fresh
+        // sentiment image per trigger, fresh object elements per change.
+        if status.triggers != self.seen_triggers {
+            self.seen_triggers = status.triggers;
+            lib.active_since = now;
+        }
+        if status.objects != lib.objects_on {
+            lib.objects_since = now;
+        }
         lib.errors = status.errors;
         lib.active = status.active;
         lib.objects_on = status.objects;
@@ -604,7 +625,7 @@ impl App {
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             for path in paths {
-                let _ = tx.send(LibLoaded::Texture(path.clone(), first_frame(&path)));
+                let _ = tx.send(LibLoaded::Texture(path.clone(), all_frames(&path)));
             }
             ctx.request_repaint();
         });
@@ -821,15 +842,27 @@ enum SecretDone {
 /// Results from library background threads.
 enum LibLoaded {
     Picked(FileTarget, PathBuf),
-    Texture(PathBuf, Result<(egui::ColorImage, [u32; 2]), String>),
+    Texture(PathBuf, Result<Decoded, String>),
 }
 
-/// First frame of an image file, decoded for a thumbnail.
-fn first_frame(path: &Path) -> Result<(egui::ColorImage, [u32; 2]), String> {
+/// Every frame of an image file, decoded for thumbnails and the preview.
+/// Frames with their delays, and the image size.
+type Decoded = (Vec<(egui::ColorImage, Duration)>, [u32; 2]);
+
+fn all_frames(path: &Path) -> Result<Decoded, String> {
     let png = avatar::load(path, avatar::Limits::default()).map_err(|e| e.to_string())?;
     let size = [png.width as usize, png.height as usize];
-    let image = egui::ColorImage::from_rgba_unmultiplied(size, &png.frames[0].rgba);
-    Ok((image, [png.width, png.height]))
+    let frames = png
+        .frames
+        .iter()
+        .map(|f| {
+            (
+                egui::ColorImage::from_rgba_unmultiplied(size, &f.rgba),
+                f.delay,
+            )
+        })
+        .collect();
+    Ok((frames, [png.width, png.height]))
 }
 
 fn file_name(path: &Path) -> String {

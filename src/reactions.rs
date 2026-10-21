@@ -42,6 +42,8 @@ pub struct Status {
     /// Per item, why its file could not be used; the previous version, if
     /// any, stays in use.
     pub errors: HashMap<Uuid, String>,
+    /// Triggers so far; a change means the sentiment's image restarted.
+    pub triggers: u64,
 }
 
 pub struct Handle {
@@ -236,6 +238,7 @@ fn publish(
         active: director.active(),
         objects: c.objects,
         errors: errors.clone(),
+        triggers: director.triggers(),
     };
     if status.send_if_modified(|s| std::mem::replace(s, new.clone()) != new) {
         notify();
