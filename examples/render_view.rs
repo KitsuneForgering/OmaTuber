@@ -6,45 +6,13 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use eframe::egui::{self, ColorImage, TextureOptions};
+use eframe::egui::{ColorImage, TextureOptions};
 use egui_kittest::Harness;
 use omatuber::mouth::{GateParams, Mouth};
 use omatuber::obs::{AudioInput, Connection, Status};
-use omatuber::theme;
 use omatuber::view::{self, SlotView, ViewState};
+use omatuber::{example, theme};
 use uuid::Uuid;
-
-/// A simple face with a transparent background; `open` draws an open mouth.
-fn face(open: bool) -> ColorImage {
-    let (w, h) = (240usize, 280usize);
-    let mut px = vec![egui::Color32::TRANSPARENT; w * h];
-    let skin = egui::Color32::from_rgb(250, 214, 180);
-    let dark = egui::Color32::from_rgb(40, 30, 40);
-    for y in 0..h {
-        for x in 0..w {
-            let (fx, fy) = (x as f32 - 120.0, y as f32 - 150.0);
-            let mut c = egui::Color32::TRANSPARENT;
-            if (fx / 105.0).powi(2) + (fy / 120.0).powi(2) <= 1.0 {
-                c = skin;
-            }
-            for ex in [-40.0, 40.0] {
-                if (fx - ex).powi(2) + (fy + 25.0).powi(2) <= 110.0 {
-                    c = dark;
-                }
-            }
-            let mouth = if open {
-                (fx / 28.0).powi(2) + ((fy - 50.0) / 22.0).powi(2) <= 1.0
-            } else {
-                fx.abs() <= 30.0 && (fy - 50.0).abs() <= 3.0
-            };
-            if mouth {
-                c = dark;
-            }
-            px[y * w + x] = c;
-        }
-    }
-    ColorImage::new([w, h], px)
-}
 
 struct Scene {
     name: &'static str,
@@ -83,7 +51,7 @@ fn main() {
     let inputs = vec![
         AudioInput {
             uuid: mic,
-            name: "Mic/Aux".to_owned(),
+            name: "Yeti Nano".to_owned(),
         },
         AudioInput {
             uuid: Uuid::from_u128(2),
@@ -95,59 +63,77 @@ fn main() {
         inputs: Vec::new(),
         level_db: f32::NEG_INFINITY,
         mouth: Mouth::Closed,
+        receiving: false,
+    };
+    let live = |level_db: f32, mouth: Mouth| Status {
+        connection: Connection::Connected,
+        inputs: inputs.clone(),
+        level_db,
+        mouth,
+        receiving: true,
+    };
+    let configured = || ViewState {
+        selected: Some(mic),
+        ..base(palette)
     };
 
     let scenes = vec![
         Scene {
             name: "1-first-run",
-            size: [620.0, 720.0],
+            size: [1100.0, 760.0],
             status: idle.clone(),
-            state: ViewState { show_connection: true, ..base(palette) },
+            state: ViewState {
+                show_connection: true,
+                ..base(palette)
+            },
             images: false,
         },
         Scene {
-            name: "2-talking",
-            size: [620.0, 720.0],
-            status: Status {
-                connection: Connection::Connected,
-                inputs: inputs.clone(),
-                level_db: -17.0,
-                mouth: Mouth::Open,
-            },
-            state: ViewState { selected: Some(mic), ..base(palette) },
+            name: "2-live-talking",
+            size: [1100.0, 760.0],
+            status: live(-17.0, Mouth::Open),
+            state: configured(),
             images: true,
         },
         Scene {
-            name: "3-quiet-narrow",
-            size: [420.0, 720.0],
-            status: Status {
-                connection: Connection::Connected,
-                inputs,
-                level_db: -45.0,
-                mouth: Mouth::Closed,
-            },
-            state: ViewState { selected: Some(mic), ..base(palette) },
+            name: "3-live-quiet",
+            size: [1100.0, 760.0],
+            status: live(-44.0, Mouth::Closed),
+            state: configured(),
             images: true,
         },
         Scene {
-            name: "4-errors",
-            size: [620.0, 760.0],
+            name: "4-no-signal",
+            size: [1100.0, 760.0],
             status: Status {
-                connection: Connection::Retrying {
-                    error: "OBS não respondeu; confira se está aberto e com o servidor WebSocket ativado"
-                        .to_owned(),
-                    after: Duration::from_secs(4),
-                },
-                ..idle
+                receiving: false,
+                ..live(f32::NEG_INFINITY, Mouth::Closed)
+            },
+            state: configured(),
+            images: true,
+        },
+        Scene {
+            name: "5-narrow",
+            size: [520.0, 1000.0],
+            status: live(-17.0, Mouth::Open),
+            state: configured(),
+            images: true,
+        },
+        Scene {
+            name: "6-errors",
+            size: [1100.0, 760.0],
+            status: Status {
+                connection: Connection::Failed("senha do OBS recusada".to_owned()),
+                ..idle.clone()
             },
             state: ViewState {
                 selected: Some(mic),
                 show_connection: true,
-                server: Err("não foi possível usar a porta 39017: Address in use".to_owned()),
-                prefs_error: Some("preferências ignoradas: expected value at line 1".to_owned()),
+                server: Err("Não foi possível usar a porta 39017: Address in use".to_owned()),
+                prefs_error: Some("Preferências ignoradas: expected value at line 1".to_owned()),
                 slots: [
                     SlotView {
-                        error: Some("/home/x/avatar.jpg: o arquivo não é um PNG".to_owned()),
+                        error: Some("avatar.jpg: o arquivo não é um PNG".to_owned()),
                         ..Default::default()
                     },
                     SlotView::default(),
@@ -155,6 +141,19 @@ fn main() {
                 ..base(palette)
             },
             images: false,
+        },
+        Scene {
+            name: "7-retrying",
+            size: [1100.0, 760.0],
+            status: Status {
+                connection: Connection::Retrying {
+                    error: "OBS não respondeu".to_owned(),
+                    after: Duration::from_secs(4),
+                },
+                ..idle
+            },
+            state: configured(),
+            images: true,
         },
     ];
 
@@ -169,21 +168,22 @@ fn main() {
         let mut loaded = !images;
         let mut harness = Harness::builder().with_size(size).build_ui_state(
             move |ui, state: &mut ViewState| {
+                theme::apply(ui.ctx(), &state.palette);
                 if !loaded {
-                    theme::apply(ui.ctx(), &state.palette);
                     for (i, open) in [(0, false), (1, true)] {
-                        let img = face(open);
-                        state.slots[i].size = Some([img.size[0] as u32, img.size[1] as u32]);
-                        state.slots[i].file = Some(format!("face-{i}.png"));
+                        let img = example::render(open);
+                        let size = [img.width() as usize, img.height() as usize];
+                        let color = ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                        state.slots[i].size = Some([size[0] as u32, size[1] as u32]);
+                        state.slots[i].file =
+                            Some(if open { "falando.png" } else { "quieto.png" }.to_owned());
                         state.slots[i].texture = Some(ui.ctx().load_texture(
                             format!("f{i}"),
-                            img,
+                            color,
                             TextureOptions::LINEAR,
                         ));
                     }
                     loaded = true;
-                } else {
-                    theme::apply(ui.ctx(), &state.palette);
                 }
                 view::draw(ui, state, &status);
             },

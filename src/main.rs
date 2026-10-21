@@ -3,20 +3,21 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use eframe::egui::{self, TextureOptions};
 use omatuber::avatar::{self, LoadError, Png};
+use omatuber::example;
 use omatuber::mouth::{GateParams, Mouth};
 use omatuber::obs::{self, Command, Connection};
 use omatuber::prefs::{self, Prefs};
 use omatuber::server::{self, Outputs};
 use omatuber::theme;
-use omatuber::view::{self, Action, FLOOR_DB, HYSTERESIS_DB, SlotView, TEST_DB, ViewState};
+use omatuber::view::{self, Action, FLOOR_DB, HYSTERESIS_DB, SlotView, ViewState};
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("OmaTuber")
             .with_app_id("omatuber")
-            .with_inner_size([640.0, 680.0])
-            .with_min_inner_size([400.0, 480.0]),
+            .with_inner_size([1100.0, 760.0])
+            .with_min_inner_size([420.0, 520.0]),
         ..Default::default()
     };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -228,10 +229,29 @@ impl App {
             Action::Disconnect => self.send(Command::Disconnect),
             Action::Select(uuid) => self.send(Command::Select(uuid)),
             Action::SetParams(params) => self.send(Command::SetParams(params)),
-            Action::Test(held) => self.send(Command::Simulate(held.then_some(TEST_DB))),
             Action::Pick(mouth) => self.load_async(ctx, mouth, None),
             Action::Dropped(mouth, path) => self.load_async(ctx, mouth, Some(path)),
+            Action::UseExample => self.use_example(ctx),
             Action::RetryServer => self.start_server(),
+        }
+    }
+
+    /// Writes the generated sample avatar to the data directory and loads it
+    /// like any other pair of PNGs, so it is saved and served the same way.
+    fn use_example(&mut self, ctx: &egui::Context) {
+        let written = example::default_dir()
+            .ok_or_else(|| "pasta de dados desconhecida".to_owned())
+            .and_then(|dir| example::write_to(&dir).map_err(|e| e.to_string()));
+        match written {
+            Ok(paths) => {
+                for (mouth, path) in [Mouth::Closed, Mouth::Open].into_iter().zip(paths) {
+                    let result = avatar::load(&path, avatar::Limits::default());
+                    self.apply_png(ctx, mouth, path, result);
+                }
+            }
+            Err(e) => {
+                self.view.slots[0].error = Some(format!("Não foi possível criar o exemplo: {e}"));
+            }
         }
     }
 

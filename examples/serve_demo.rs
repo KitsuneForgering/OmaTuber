@@ -20,7 +20,9 @@ fn face(open: bool) -> Arc<[u8]> {
         if (fx / 105.0).powi(2) + (fy / 120.0).powi(2) <= 1.0 {
             c = Rgba([250, 214, 180, 255]);
         }
-        let eye = [-40.0, 40.0].iter().any(|ex| (fx - ex).powi(2) + (fy + 25.0).powi(2) <= 110.0);
+        let eye = [-40.0, 40.0]
+            .iter()
+            .any(|ex| (fx - ex).powi(2) + (fy + 25.0).powi(2) <= 110.0);
         let mouth = if open {
             (fx / 28.0).powi(2) + ((fy - 50.0) / 22.0).powi(2) <= 1.0
         } else {
@@ -39,7 +41,9 @@ fn face(open: bool) -> Arc<[u8]> {
 #[tokio::main]
 async fn main() {
     let mut args = std::env::args().skip(1);
-    let port = args.next().map_or(server::DEFAULT_PORT + 1, |p| p.parse().expect("port"));
+    let port = args
+        .next()
+        .map_or(server::DEFAULT_PORT + 1, |p| p.parse().expect("port"));
     let toggle = Duration::from_millis(args.next().map_or(500, |t| t.parse().expect("ms")));
 
     let outputs = Outputs::default();
@@ -52,7 +56,11 @@ async fn main() {
     let mut mouth = Mouth::Closed;
     loop {
         tokio::time::sleep(toggle).await;
-        mouth = if mouth == Mouth::Open { Mouth::Closed } else { Mouth::Open };
+        mouth = if mouth == Mouth::Open {
+            Mouth::Closed
+        } else {
+            Mouth::Open
+        };
         outputs.set_mouth(mouth);
     }
 }

@@ -57,6 +57,10 @@ pub struct Status {
     /// Level of the selected input or simulation, in dBFS.
     pub level_db: f32,
     pub mouth: Mouth,
+    /// The selected input (or the simulation) delivered a level within the
+    /// gate's staleness window. False when OBS stopped reporting it, e.g. the
+    /// source is not active in the current scene.
+    pub receiving: bool,
 }
 
 pub enum Command {
@@ -85,6 +89,7 @@ pub fn spawn(outputs: Outputs, notify: impl Fn() + Send + 'static) -> Handle {
         inputs: Vec::new(),
         level_db: f32::NEG_INFINITY,
         mouth: Mouth::Closed,
+        receiving: false,
     });
     tokio::spawn(Worker::new(outputs, status_tx, notify).run(rx));
     Handle { commands, status }
@@ -304,11 +309,15 @@ impl<N: Fn()> Worker<N> {
 
     fn publish(&mut self, level_db: f32) {
         let mouth = self.gate.mouth();
+        let receiving = !self.gate.is_stale(self.now());
         self.outputs.set_mouth(mouth);
         let changed = self.status.send_if_modified(|s| {
-            let changed = s.mouth != mouth || s.level_db.to_bits() != level_db.to_bits();
+            let changed = s.mouth != mouth
+                || s.level_db.to_bits() != level_db.to_bits()
+                || s.receiving != receiving;
             s.mouth = mouth;
             s.level_db = level_db;
+            s.receiving = receiving;
             changed
         });
         if changed {
