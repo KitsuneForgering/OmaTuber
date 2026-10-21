@@ -247,3 +247,28 @@ async fn retriggering_the_same_sentiment_changes_the_scene() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn replacing_a_file_reaches_the_page_without_retriggering() {
+    let (dir, closed, open) = files("replace");
+    let outputs = Outputs::default();
+    let lib = library(closed.clone(), open.clone(), 60_000);
+    let handle = reactions::spawn(outputs.clone(), lib.clone(), || {});
+    assert_eq!(
+        post(&outputs, "/react/Animado", "127.0.0.1", true).await,
+        StatusCode::NO_CONTENT
+    );
+    let before = wait_until(&outputs, |s| s.sentiment.is_some()).await;
+
+    // Same sentiment, new quiet image file, applied from the editor.
+    let mut edited = lib;
+    edited.sentiments[0].quiet = Some(open);
+    handle.commands.send(Command::Apply(edited)).unwrap();
+    let after = wait_until(&outputs, |s| s.rev > before.rev).await;
+    assert_eq!(
+        after.sentiment.as_ref().unwrap().quiet,
+        before.sentiment.as_ref().unwrap().quiet,
+        "same key"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

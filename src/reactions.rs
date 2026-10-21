@@ -80,6 +80,8 @@ async fn run(
     let mut errors = HashMap::new();
     let mut director = Director::default();
     apply(library, &mut lib, &mut assets, &mut errors, &outputs).await;
+    // Bumped per applied library, so replaced files reach the page.
+    let mut generation: u64 = 1;
     loop {
         let now = start.elapsed();
         publish(
@@ -87,6 +89,7 @@ async fn run(
             &lib,
             &assets,
             &errors,
+            generation,
             now,
             &outputs,
             &status,
@@ -112,7 +115,10 @@ async fn run(
                     }
                     Command::Clear => director.clear(),
                     Command::ToggleObject(id) => director.toggle_object(&lib, id),
-                    Command::Apply(new) => apply(new, &mut lib, &mut assets, &mut errors, &outputs).await,
+                    Command::Apply(new) => {
+                        apply(new, &mut lib, &mut assets, &mut errors, &outputs).await;
+                        generation += 1;
+                    }
                 }
             }
             _ = sleep_until_opt(deadline) => {}
@@ -197,6 +203,7 @@ fn publish(
     lib: &Library,
     assets: &HashMap<String, Served>,
     errors: &HashMap<Uuid, String>,
+    generation: u64,
     now: Duration,
     outputs: &Outputs,
     status: &watch::Sender<Status>,
@@ -231,6 +238,7 @@ fn publish(
     outputs.set_scene(Scene {
         sentiment,
         objects,
+        assets: generation,
         ..Scene::default()
     });
 

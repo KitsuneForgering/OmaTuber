@@ -54,6 +54,10 @@ pub struct Scene {
     pub rev: u64,
     pub sentiment: Option<SceneSentiment>,
     pub objects: Vec<SceneObject>,
+    /// Changes whenever library files are re-applied. Keys stay the same
+    /// when a file is replaced, so without this the scene would look
+    /// unchanged and the page would keep showing the old image.
+    pub assets: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -424,7 +428,7 @@ mod tests {
         );
         assert_eq!(
             next().await,
-            "event: scene\ndata: {\"rev\":0,\"sentiment\":null,\"objects\":[]}\n\n"
+            "event: scene\ndata: {\"rev\":0,\"sentiment\":null,\"objects\":[],\"assets\":0}\n\n"
         );
         assert_eq!(next().await, "event: mouth\ndata: closed\n\n");
 
@@ -447,7 +451,7 @@ mod tests {
         });
         assert_eq!(
             next().await,
-            "event: scene\ndata: {\"rev\":1,\"sentiment\":{\"quiet\":\"s-q\",\"talking\":null,\"trigger\":1},\"objects\":[]}\n\n"
+            "event: scene\ndata: {\"rev\":1,\"sentiment\":{\"quiet\":\"s-q\",\"talking\":null,\"trigger\":1},\"objects\":[],\"assets\":0}\n\n"
         );
 
         // Nothing changes: with time paused, the next event is the heartbeat.

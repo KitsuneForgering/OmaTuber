@@ -186,7 +186,7 @@ impl App {
         app.update_scene_target();
         app.view.library.voice = initial_voice_view();
         app.secret_op(SecretOp::Load);
-        app.load_library_textures(ctx, &library);
+        app.load_library_textures(ctx, &library, false);
         for (mouth, path) in [
             (Mouth::Closed, saved.closed_png),
             (Mouth::Open, saved.open_png),
@@ -345,7 +345,7 @@ impl App {
                     }
                 });
             }
-            Action::ApplyLibrary => self.apply_library(),
+            Action::ApplyLibrary => self.apply_library(ctx),
             Action::TriggerSentiment(id) => {
                 let _ = self.reactions.commands.send(reactions::Command::Trigger {
                     target: id.to_string(),
@@ -554,7 +554,7 @@ impl App {
         v.examples = example_counts(&v.examples);
     }
 
-    fn apply_library(&mut self) {
+    fn apply_library(&mut self, ctx: &egui::Context) {
         let mut lib = self.view.library.draft.clone();
         lib.sanitize();
         self.view.library.save_error = library::default_path().and_then(|path| {
@@ -566,6 +566,10 @@ impl App {
             .reactions
             .commands
             .send(reactions::Command::Apply(lib.clone()));
+        // The reactions task re-reads every file; so does the preview, or a
+        // file edited outside the app under the same name would look new in
+        // OBS and old here. Old textures stay until replacements arrive.
+        self.load_library_textures(ctx, &lib, true);
         self.view.library.applied = lib.clone();
         self.view.library.draft = lib;
     }
@@ -625,15 +629,18 @@ impl App {
         lib.objects_on = status.objects;
     }
 
-    /// Decodes thumbnails for every file of `lib` not loaded yet.
-    fn load_library_textures(&self, ctx: &egui::Context, lib: &library::Library) {
+    /// Decodes every file of `lib` off the UI thread; with `force` false,
+    /// files already loaded are skipped.
+    fn load_library_textures(&self, ctx: &egui::Context, lib: &library::Library, force: bool) {
         let mut paths: Vec<PathBuf> = lib
             .sentiments
             .iter()
             .flat_map(|s| [s.quiet.clone(), s.talking.clone()])
             .flatten()
             .chain(lib.objects.iter().map(|o| o.file.clone()))
-            .filter(|p| !p.as_os_str().is_empty() && !self.view.library.textures.contains_key(p))
+            .filter(|p| {
+                !p.as_os_str().is_empty() && (force || !self.view.library.textures.contains_key(p))
+            })
             .collect();
         paths.sort();
         paths.dedup();

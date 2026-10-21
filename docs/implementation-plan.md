@@ -420,3 +420,12 @@ Verificado: 5 testes da sugestão, 1 de coleta contra o servidor obs-websocket f
 O mudo era deduzido de "silêncio total", que confunde mudo com sala silenciosa. Agora o worker lê o mudo da fonte escolhida no OBS (`GetInputMute`, ao conectar e ao trocar de fonte), acompanha `InputMuteStateChanged` e volta a "desconhecido" ao desconectar. A tela segue a linha **Fonte silenciada** da tabela de estados: item **Microfone silenciado** com "Ative … no mixer de áudio do OBS", frase de causa correspondente e o nível do cartão **Sua voz** trocado por **silenciado no OBS**. Com silêncio total e o OBS confirmando que não há mudo, a frase sugere conferir o dispositivo de entrada, em vez de sugerir mudo.
 
 Verificado: 1 teste contra o servidor obs-websocket falso (mudo na conexão, mudanças por evento, desconhecido ao desconectar) e 1 de interface; 133 testes no build padrão e 151 com `sound`. **Não verificado no OBS real.**
+
+**2026-10-21, iteração 23: revisão; arquivo trocado não chegava ao OBS.** OBS fechado.
+
+Revisão do código contra o requisito "uma mudança de arquivo aplicada no editor publica uma nova revisão por SSE e aparece na cena existente". Dois defeitos:
+
+1. A cena levava só as chaves dos assets (`<id>-q`), que não mudam quando o arquivo é trocado. Com a mesma chave, a cena ficava idêntica, nenhum evento saía e a página do OBS continuava com a imagem antiga. Um teste de integração reproduziu a falha antes da correção (cena presa na revisão 1). Agora a tarefa de reações conta as bibliotecas aplicadas (`Scene::assets`); a cena muda, a revisão sobe e a página recarrega as imagens.
+2. A prévia guardava as imagens da biblioteca pelo caminho do arquivo e não as relia ao aplicar. Um arquivo editado fora do app com o mesmo nome aparecia novo no OBS e antigo na prévia. **Aplicar** agora relê todas as imagens da biblioteca para a prévia; as antigas ficam até as novas chegarem.
+
+Verificado: 134 testes no build padrão e 152 com `sound`. O segundo defeito não tem teste automático (a lógica está no binário, não na biblioteca).
