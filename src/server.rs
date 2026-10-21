@@ -48,6 +48,8 @@ pub struct Images {
     pub sizes: [Option<[u32; 2]>; 2],
     /// Offset of the open image on that canvas, in its pixels.
     pub offset: crate::layout::Offset,
+    /// Bounce height when the mouth opens, fraction of the canvas height.
+    pub bounce: f32,
     /// Optional eyes-closed versions of [closed, open], same sizes as those.
     pub blink: [Option<Served>; 2],
 }
@@ -189,15 +191,22 @@ impl Outputs {
         });
     }
 
-    /// Image sizes and the open image's offset, so the page draws both on
-    /// one canvas at one scale. Pages are only woken when these change.
-    pub fn set_layout(&self, sizes: [Option<[u32; 2]>; 2], offset: crate::layout::Offset) {
+    /// Image sizes, the open image's offset and the bounce height, so the
+    /// page draws both on one canvas at one scale and moves it like the
+    /// preview. Pages are only woken when these change.
+    pub fn set_layout(
+        &self,
+        sizes: [Option<[u32; 2]>; 2],
+        offset: crate::layout::Offset,
+        bounce: f32,
+    ) {
         self.images.send_if_modified(|images| {
-            if images.sizes == sizes && images.offset == offset {
+            if images.sizes == sizes && images.offset == offset && images.bounce == bounce {
                 return false;
             }
             images.sizes = sizes;
             images.offset = offset;
+            images.bounce = bounce;
             true
         });
     }
@@ -409,6 +418,7 @@ fn images_event(images: &Images) -> Event {
         "open": images.open.is_some(),
         "sizes": images.sizes,
         "offset": images.offset,
+        "bounce": images.bounce,
         "blink": [images.blink[0].is_some(), images.blink[1].is_some()],
     });
     Event::default().event("images").data(data.to_string())
@@ -500,7 +510,7 @@ mod tests {
 
         assert_eq!(
             next().await,
-            "event: images\ndata: {\"blink\":[false,false],\"closed\":true,\"offset\":[0,0],\"open\":false,\"rev\":1,\"sizes\":[null,null]}\n\n"
+            "event: images\ndata: {\"blink\":[false,false],\"bounce\":0.0,\"closed\":true,\"offset\":[0,0],\"open\":false,\"rev\":1,\"sizes\":[null,null]}\n\n"
         );
         assert_eq!(
             next().await,
@@ -518,7 +528,7 @@ mod tests {
         outputs.set_image(Mouth::Open, Arc::from(&b"o"[..]), "image/png");
         assert_eq!(
             next().await,
-            "event: images\ndata: {\"blink\":[false,false],\"closed\":true,\"offset\":[0,0],\"open\":true,\"rev\":2,\"sizes\":[null,null]}\n\n"
+            "event: images\ndata: {\"blink\":[false,false],\"bounce\":0.0,\"closed\":true,\"offset\":[0,0],\"open\":true,\"rev\":2,\"sizes\":[null,null]}\n\n"
         );
 
         outputs.set_scene(Scene {

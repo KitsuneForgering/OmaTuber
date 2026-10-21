@@ -85,6 +85,10 @@ pub struct ViewState {
     /// Offset of the open image on the shared canvas, in its pixels
     /// (`layout.rs`), to align art drawn on different canvases.
     pub open_offset: crate::layout::Offset,
+    /// Bounce when the mouth opens, fraction of the canvas height; 0 is off.
+    pub bounce: f32,
+    /// The preview's bounce, fed the same mouth as the browser page.
+    pub bounce_motion: crate::layout::Bounce,
     /// Optional eyes-closed versions of the base images.
     pub blink_slots: [SlotView; 2],
     /// Eyes closed right now; mirrors what the browser page received.
@@ -129,6 +133,8 @@ pub enum Action {
     StartCalibration,
     /// Nudge the open image on the shared canvas, in its pixels.
     SetOpenOffset(crate::layout::Offset),
+    /// Bounce height when the mouth opens, fraction of the canvas height.
+    SetBounce(f32),
     PickBlink(Mouth),
     ClearBlink(Mouth),
     /// Record one 2.5 s example of this sound.
@@ -436,6 +442,12 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
         checkerboard(&painter, stage, &p);
         // Fall back to the other image so a half-configured avatar still shows.
         let now = ui.input(|i| i.time);
+        // The bounce follows the mouth shown here, as the page follows its own.
+        s.bounce_motion.mouth(shown == Mouth::Open, now);
+        let (lift, flying) = s.bounce_motion.height(s.bounce, now);
+        if flying && s.bounce > 0.0 {
+            ui.ctx().request_repaint();
+        }
         // The image for this mouth, or the other one if it is missing.
         let index = if s.slots[shown as usize].texture.is_some() {
             shown as usize
@@ -468,14 +480,16 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
         let inner = stage.shrink(16.0);
         let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
         // Same geometry as the browser page (layout.rs): both base images on
-        // one canvas, one scale, the open one shifted by its offset.
+        // one canvas, one scale, the open one shifted by its offset, with room
+        // above for the bounce.
         let canvas = layout::canvas(s.slots[0].size, s.slots[1].size).map(|c| {
-            let (scale, o) = layout::fit(c, [inner.width(), inner.height()]);
+            let (scale, o) = layout::fit_with_headroom(c, [inner.width(), inner.height()], s.bounce);
             let size = vec2(c.width as f32, c.height as f32) * scale;
+            let up = lift * size.y;
             (
                 c,
                 scale,
-                Rect::from_min_size(inner.min + vec2(o[0], o[1]), size),
+                Rect::from_min_size(inner.min + vec2(o[0], o[1] - up), size),
             )
         });
         let drawn = if let Some((texture, [w, h])) = sentiment {
@@ -879,7 +893,34 @@ fn thumbnails(ui: &mut egui::Ui, s: &mut ViewState, shown: Mouth, actions: &mut 
                 .color(p.muted),
         );
     }
+    bounce_row(ui, s, actions);
     blink_row(ui, s, actions);
+}
+
+/// How high the avatar jumps when the mouth opens; 0 turns it off.
+fn bounce_row(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
+    ui.horizontal_wrapped(|ui| {
+        let label = ui.label("Pulo ao falar");
+        let mut percent = (s.bounce * 100.0).round();
+        let max = layout::BOUNCE_MAX * 100.0;
+        ui.add(
+            egui::Slider::new(&mut percent, 0.0..=max)
+                .step_by(1.0)
+                .custom_formatter(|v, _| {
+                    if v == 0.0 {
+                        "desligado".to_owned()
+                    } else {
+                        format!("{v:.0} % da altura")
+                    }
+                }),
+        )
+        .labelled_by(label.id);
+        let bounce = percent / 100.0;
+        if bounce != s.bounce {
+            s.bounce = bounce;
+            actions.push(Action::SetBounce(bounce));
+        }
+    });
 }
 
 /// Optional eyes-closed images; the app blinks on its own every few seconds.

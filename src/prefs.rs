@@ -24,6 +24,9 @@ pub struct Prefs {
     /// Optional eyes-closed versions of the two base images.
     pub blink_closed_png: Option<PathBuf>,
     pub blink_open_png: Option<PathBuf>,
+    /// Bounce when the mouth opens, as a fraction of the avatar height
+    /// (`layout.rs`); 0 is off.
+    pub bounce: f32,
 }
 
 impl Default for Prefs {
@@ -38,6 +41,7 @@ impl Default for Prefs {
             open_offset: [0, 0],
             blink_closed_png: None,
             blink_open_png: None,
+            bounce: 0.0,
         }
     }
 }
@@ -117,6 +121,7 @@ mod tests {
             open_offset: [4, -2],
             blink_closed_png: None,
             blink_open_png: Some("/a/blink-open.png".into()),
+            bounce: 0.08,
         };
         save(&path, &prefs).unwrap();
         assert_eq!(load(&path).unwrap(), prefs);

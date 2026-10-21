@@ -30,6 +30,8 @@ fn state() -> ViewState {
         scene_choice: None,
         calibration: Default::default(),
         open_offset: [0, 0],
+        bounce: 0.0,
+        bounce_motion: Default::default(),
         blink_slots: Default::default(),
         blinking: false,
         secret_note: None,
@@ -681,7 +683,7 @@ mod keyboard {
         h.run();
         h.get_by_label("Marca da sensibilidade").focus();
         h.run();
-        h.key_press(egui::Key::ArrowRight);
+        h.key_press(eframe::egui::Key::ArrowRight);
         h.run();
         let before = GateParams::default().open_db;
         assert_eq!(h.state().0.params.open_db, before + 1.0);
@@ -766,4 +768,17 @@ fn silence_trigger_can_be_set_per_sentiment() {
         Some(60)
     );
     assert!(h.state().0.library.dirty(), "takes effect on Aplicar");
+}
+
+#[test]
+fn bounce_slider_starts_off_and_moves_by_keyboard() {
+    let mut h = harness(idle());
+    h.run();
+    h.get_by_role_and_label(eframe::egui::accesskit::Role::Slider, "Pulo ao falar")
+        .focus();
+    h.run();
+    h.key_press(eframe::egui::Key::ArrowRight);
+    h.run();
+    assert_eq!(h.state().0.bounce, 0.01);
+    assert_eq!(h.state().1, [Action::SetBounce(0.01)]);
 }

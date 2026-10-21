@@ -76,6 +76,11 @@ async fn main() {
     outputs.set_layout(
         [Some([240, 280]), Some([240 + 2 * pad, 280 + 2 * pad])],
         [0, 0],
+        // DEMO_BOUNCE=0.1 bounces the avatar by a tenth of its height.
+        std::env::var("DEMO_BOUNCE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0),
     );
     // DEMO_SCENE=1 adds a sentiment (the open-mouth fox as its quiet image)
     // and a red disc object near the top of the avatar.

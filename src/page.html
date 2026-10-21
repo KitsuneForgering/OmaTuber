@@ -9,9 +9,12 @@
   img.avatar { position: absolute; visibility: hidden; }
   img.avatar.on { visibility: visible; }
   img.object { position: absolute; transform: translate(-50%, -50%); }
+  /* Moved as one piece by the bounce, objects included. */
+  #avatar { position: absolute; inset: 0; }
 </style>
 </head>
 <body>
+<div id="avatar">
 <img class="avatar" id="closed" alt="">
 <img class="avatar" id="open" alt="">
 <img class="avatar" id="blinkClosed" alt="">
@@ -19,6 +22,7 @@
 <img class="avatar" id="quiet" alt="">
 <img class="avatar" id="talking" alt="">
 <div id="objects"></div>
+</div>
 <script>
   // The server resends the state every second; after this long without any
   // message the stream is presumed dead and the mouth closes.
@@ -37,6 +41,12 @@
   // image's offset. Mirrors src/layout.rs.
   let sizes = [null, null];
   let offset = [0, 0];
+  // Bounce height as a fraction of the canvas, and when the current one
+  // started. Mirrors layout::Bounce: same arc, a new one only after landing.
+  const BOUNCE_MS = 500;
+  const avatarBox = document.getElementById("avatar");
+  let bounce = 0;
+  let bounceStart = -Infinity;
   let staleTimer;
 
   // Same rule as library::Director::compose: a sentiment replaces the base;
@@ -60,9 +70,12 @@
     const known = sizes.filter(Boolean);
     if (!known.length) return { left: 0, top: 0, width: W, height: H, scale: 1, cw: W, ch: H };
     const cw = Math.max(...known.map((s) => s[0])), ch = Math.max(...known.map((s) => s[1]));
-    const scale = Math.min(W / cw, H / ch);
+    // Room above the canvas for the bounce (layout::fit_with_headroom).
+    const room = Math.ceil(ch * bounce);
+    const scale = Math.min(W / cw, H / (ch + room));
     const width = cw * scale, height = ch * scale;
-    return { left: (W - width) / 2, top: (H - height) / 2, width, height, scale, cw, ch };
+    const top = (H - (ch + room) * scale) / 2 + room * scale;
+    return { left: (W - width) / 2, top, width, height, scale, cw, ch };
   }
 
   function placeBase(el, size, off, c) {
@@ -107,6 +120,27 @@
     placeObjects(c);
   }
 
+  // layout::bounce_height: a ballistic arc, peak at mid-air.
+  function lift(now) {
+    const u = (now - bounceStart) / BOUNCE_MS;
+    return u >= 0 && u < 1 ? bounce * 4 * u * (1 - u) : 0;
+  }
+
+  function fly(now) {
+    const h = lift(now);
+    avatarBox.style.transform = h ? `translateY(${-h * canvasRect().height}px)` : "";
+    if (now - bounceStart < BOUNCE_MS) requestAnimationFrame(fly);
+  }
+
+  function setMouth(next) {
+    const now = performance.now();
+    if (next === "open" && mouth !== "open" && bounce > 0 && now - bounceStart >= BOUNCE_MS) {
+      bounceStart = now;
+      requestAnimationFrame(fly);
+    }
+    mouth = next;
+  }
+
   function alive() {
     clearTimeout(staleTimer);
     staleTimer = setTimeout(() => { mouth = "closed"; render(); }, STALE_MS);
@@ -127,6 +161,7 @@
     setSrc("blinkOpen", blink[1] ? `/blink-open.png?rev=${d.rev}` : null);
     sizes = d.sizes || [null, null];
     offset = d.offset || [0, 0];
+    bounce = d.bounce || 0;
     alive();
     render();
   });
@@ -155,7 +190,7 @@
     render();
   });
   events.addEventListener("mouth", (e) => {
-    mouth = e.data;
+    setMouth(e.data);
     alive();
     render();
   });

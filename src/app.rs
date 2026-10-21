@@ -187,6 +187,8 @@ impl App {
                 scene_choice: saved.scene.clone(),
                 calibration: Default::default(),
                 open_offset: saved.open_offset,
+                bounce: saved.bounce,
+                bounce_motion: Default::default(),
                 blink_slots: Default::default(),
                 blinking: false,
                 secret_note: None,
@@ -458,6 +460,10 @@ impl App {
             Action::AddToScene => self.send(Command::AddToScene),
             Action::SetOpenOffset(offset) => {
                 self.view.open_offset = offset;
+                self.update_scene_target();
+            }
+            Action::SetBounce(bounce) => {
+                self.view.bounce = bounce;
                 self.update_scene_target();
             }
             Action::StartCalibration => {
@@ -781,13 +787,16 @@ impl App {
     /// its browser source: this app's URL, sized like the "Quieto" image.
     fn update_scene_target(&self) {
         let Ok(url) = &self.view.server else { return };
-        // The browser source is as large as the shared canvas of both images.
+        // The browser source is as large as the shared canvas of both images,
+        // plus the room the bounce needs above it, so the avatar keeps its size.
         let canvas = crate::layout::canvas(self.view.slots[0].size, self.view.slots[1].size);
         let [w, h] = canvas.map_or([512, 512], |c| [c.width, c.height]);
+        let h = h + (h as f32 * self.view.bounce).ceil() as u32;
         let (width, height) = crate::scene::source_size(w, h);
         self.outputs.set_layout(
             [self.view.slots[0].size, self.view.slots[1].size],
             self.view.open_offset,
+            self.view.bounce,
         );
         self.send(Command::SceneTarget {
             scene: self.view.scene_choice.clone(),
@@ -860,6 +869,7 @@ impl App {
             blink_open_png: self.blink_paths[Mouth::Open as usize].clone(),
             scene: self.view.scene_choice.clone(),
             open_offset: self.view.open_offset,
+            bounce: self.view.bounce,
         }
     }
 
