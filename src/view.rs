@@ -7,6 +7,7 @@
 //! disagree.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, RichText, Sense, Stroke,
@@ -32,8 +33,26 @@ const SIDE_WIDTH: f32 = 360.0;
 pub struct SlotView {
     pub file: Option<String>,
     pub size: Option<[u32; 2]>,
+    /// First frame; what thumbnails show.
     pub texture: Option<TextureHandle>,
+    /// Every frame of an animation with its delay; empty for a still image.
+    pub frames: Vec<(TextureHandle, Duration)>,
+    /// UI time (`InputState::time`) the animation started at.
+    pub started: f64,
     pub error: Option<String>,
+}
+
+impl SlotView {
+    /// Texture to draw at UI time `now` and how long until it changes.
+    pub fn texture_at(&self, now: f64) -> Option<(&TextureHandle, Option<Duration>)> {
+        if self.frames.len() > 1 {
+            let delays: Vec<Duration> = self.frames.iter().map(|(_, d)| *d).collect();
+            let elapsed = Duration::from_secs_f64((now - self.started).max(0.0));
+            let (i, next) = crate::avatar::frame_index(&delays, elapsed);
+            return Some((&self.frames[i].0, next));
+        }
+        self.texture.as_ref().map(|t| (t, None))
+    }
 }
 
 pub struct ViewState {
@@ -286,14 +305,17 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
         let painter = ui.painter_at(stage);
         checkerboard(&painter, stage, &p);
         // Fall back to the other image so a half-configured avatar still shows.
+        let now = ui.input(|i| i.time);
         let slot = &s.slots[shown as usize];
-        let fallback = &s.slots[1 - shown as usize];
-        if let Some((texture, [w, h])) = slot
-            .texture
-            .as_ref()
-            .zip(slot.size)
-            .or_else(|| fallback.texture.as_ref().zip(fallback.size))
-        {
+        let slot = if slot.texture.is_some() {
+            slot
+        } else {
+            &s.slots[1 - shown as usize]
+        };
+        if let (Some((texture, next)), Some([w, h])) = (slot.texture_at(now), slot.size) {
+            if let Some(next) = next {
+                ui.ctx().request_repaint_after(next);
+            }
             let inner = stage.shrink(16.0);
             let scale = (inner.width() / w as f32).min(inner.height() / h as f32);
             let img = Rect::from_center_size(inner.center(), vec2(w as f32, h as f32) * scale);
@@ -1147,5 +1169,58 @@ mod tests {
             "more sensitive opens at a lower level"
         );
         assert_eq!(open_db_for(sensitivity(-30.0)), -30.0);
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+    use eframe::egui::{ColorImage, Context, TextureOptions};
+
+    fn texture(ctx: &Context, name: &str) -> TextureHandle {
+        ctx.load_texture(
+            name,
+            ColorImage::new([1, 1], vec![Color32::RED]),
+            TextureOptions::LINEAR,
+        )
+    }
+
+    #[test]
+    fn animated_slot_picks_frame_by_time_and_schedules_repaint() {
+        let ctx = Context::default();
+        let (a, b) = (texture(&ctx, "a"), texture(&ctx, "b"));
+        let ms = Duration::from_millis;
+        let slot = SlotView {
+            texture: Some(a.clone()),
+            frames: vec![(a.clone(), ms(100)), (b.clone(), ms(300))],
+            started: 10.0,
+            ..Default::default()
+        };
+        let at = |t: f64| {
+            let (tex, next) = slot.texture_at(t).unwrap();
+            (tex.id(), next.map(|d| d.as_millis()))
+        };
+        assert_eq!(at(10.0), (a.id(), Some(100)));
+        assert_eq!(at(10.05), (a.id(), Some(50)));
+        assert_eq!(at(10.15), (b.id(), Some(250)));
+        assert_eq!(at(10.45), (a.id(), Some(50)), "loops after 400 ms");
+        assert_eq!(
+            at(9.0).0,
+            a.id(),
+            "clock before start shows the first frame"
+        );
+    }
+
+    #[test]
+    fn still_slot_never_schedules_repaint() {
+        let ctx = Context::default();
+        let a = texture(&ctx, "a");
+        let slot = SlotView {
+            texture: Some(a.clone()),
+            ..Default::default()
+        };
+        let (tex, next) = slot.texture_at(123.0).unwrap();
+        assert_eq!((tex.id(), next), (a.id(), None));
+        assert!(SlotView::default().texture_at(0.0).is_none());
     }
 }

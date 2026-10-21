@@ -192,20 +192,46 @@ impl App {
         result: Result<Png, LoadError>,
     ) {
         let i = mouth as usize;
+        // Plan: animated formats stay out of the main flow until a recording in
+        // OBS confirms timing, transparency and restarts. Testers opt in.
+        let result = result.and_then(|png| {
+            if png.kind.animated() && std::env::var_os("OMATUBER_ANIMATED").is_none() {
+                Err(LoadError::AnimationNotEnabled)
+            } else {
+                Ok(png)
+            }
+        });
         let slot = &mut self.view.slots[i];
         match result {
             Ok(png) => {
-                let pixels = egui::ColorImage::from_rgba_unmultiplied(
-                    [png.width as usize, png.height as usize],
-                    &png.rgba,
-                );
-                let texture =
-                    ctx.load_texture(format!("avatar-{i}"), pixels, TextureOptions::LINEAR);
-                self.outputs.set_image(mouth, png.bytes.clone());
+                let size = [png.width as usize, png.height as usize];
+                let mut textures = png.frames.iter().enumerate().map(|(f, frame)| {
+                    let pixels = egui::ColorImage::from_rgba_unmultiplied(size, &frame.rgba);
+                    let name = format!("avatar-{i}-{f}");
+                    (
+                        ctx.load_texture(name, pixels, TextureOptions::LINEAR),
+                        frame.delay,
+                    )
+                });
+                let first = textures.next().map(|(t, _)| t);
+                let frames = if png.kind.animated() {
+                    first
+                        .iter()
+                        .cloned()
+                        .map(|t| (t, png.frames[0].delay))
+                        .chain(textures)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                self.outputs
+                    .set_image(mouth, png.bytes.clone(), png.kind.mime());
                 *slot = SlotView {
                     file: Some(file_name(&path)),
                     size: Some([png.width, png.height]),
-                    texture: Some(texture),
+                    texture: first,
+                    frames,
+                    started: ctx.input(|i| i.time),
                     error: None,
                 };
                 self.paths[i] = Some(path);

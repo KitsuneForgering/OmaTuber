@@ -47,8 +47,15 @@ async fn main() {
     let toggle = Duration::from_millis(args.next().map_or(500, |t| t.parse().expect("ms")));
 
     let outputs = Outputs::default();
-    outputs.set_image(Mouth::Closed, face(false));
-    outputs.set_image(Mouth::Open, face(true));
+    // DEMO_CLOSED=/path/to/file serves that image (PNG, APNG or GIF) instead.
+    match std::env::var_os("DEMO_CLOSED") {
+        Some(path) => {
+            let png = omatuber::avatar::load(path.as_ref(), Default::default()).expect("DEMO_CLOSED");
+            outputs.set_image(Mouth::Closed, png.bytes, png.kind.mime());
+        }
+        None => outputs.set_image(Mouth::Closed, face(false), "image/png"),
+    }
+    outputs.set_image(Mouth::Open, face(true), "image/png");
     let listener = server::bind(port).await.expect("bind");
     eprintln!("http://127.0.0.1:{port}/");
     tokio::spawn(server::serve(listener, outputs.clone()));

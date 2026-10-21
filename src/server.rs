@@ -30,10 +30,13 @@ const HEARTBEAT: Duration = Duration::from_secs(1);
 
 const PAGE: &str = include_str!("page.html");
 
+/// Validated image bytes and their media type.
+pub type Served = (Arc<[u8]>, &'static str);
+
 #[derive(Clone, Default)]
 pub struct Images {
-    pub closed: Option<Arc<[u8]>>,
-    pub open: Option<Arc<[u8]>>,
+    pub closed: Option<Served>,
+    pub open: Option<Served>,
     /// Bumped on every change so the page can bypass its image cache.
     pub rev: u64,
 }
@@ -65,11 +68,14 @@ impl Outputs {
             .send_if_modified(|m| std::mem::replace(m, mouth) != mouth);
     }
 
-    pub fn set_image(&self, mouth: Mouth, png: Arc<[u8]>) {
+    /// `mime` is `image/png`, `image/apng` or `image/gif`; the route keeps its
+    /// `.png` name so the OBS source URL never changes.
+    pub fn set_image(&self, mouth: Mouth, bytes: Arc<[u8]>, mime: &'static str) {
         self.images.send_modify(|images| {
+            let served = Some((bytes, mime));
             match mouth {
-                Mouth::Closed => images.closed = Some(png),
-                Mouth::Open => images.open = Some(png),
+                Mouth::Closed => images.closed = served,
+                Mouth::Open => images.open = served,
             }
             images.rev += 1;
         });
@@ -100,12 +106,12 @@ async fn image(State(outputs): State<Outputs>, mouth: Mouth) -> Response {
         Mouth::Open => images.open.clone(),
     };
     match png {
-        Some(png) => (
+        Some((bytes, mime)) => (
             [
-                (header::CONTENT_TYPE, "image/png"),
+                (header::CONTENT_TYPE, mime),
                 (header::CACHE_CONTROL, "no-store"),
             ],
-            axum::body::Bytes::from_owner(png),
+            axum::body::Bytes::from_owner(bytes),
         )
             .into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
@@ -209,9 +215,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn animated_images_keep_route_and_get_their_type() {
+        let outputs = Outputs::default();
+        outputs.set_image(Mouth::Closed, Arc::from(&b"GIF89a"[..]), "image/gif");
+        let resp = get(&outputs, "/closed.png").await;
+        assert_eq!(resp.headers()[header::CONTENT_TYPE], "image/gif");
+        assert_eq!(body(resp).await, b"GIF89a");
+    }
+
+    #[tokio::test]
     async fn serves_exact_bytes_on_fixed_routes_only() {
         let outputs = Outputs::default();
-        outputs.set_image(Mouth::Open, Arc::from(&b"\x89PNG-open"[..]));
+        outputs.set_image(Mouth::Open, Arc::from(&b"\x89PNG-open"[..]), "image/png");
         let resp = get(&outputs, "/open.png?rev=1").await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.headers()[header::CONTENT_TYPE], "image/png");
@@ -240,7 +255,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn stream_sends_snapshot_then_changes_then_heartbeat() {
         let outputs = Outputs::default();
-        outputs.set_image(Mouth::Closed, Arc::from(&b"c"[..]));
+        outputs.set_image(Mouth::Closed, Arc::from(&b"c"[..]), "image/png");
         let mut body = get(&outputs, "/events").await.into_body();
         let mut next = async || {
             let frame = body.frame().await.unwrap().unwrap();
@@ -256,7 +271,7 @@ mod tests {
         outputs.set_mouth(Mouth::Open);
         assert_eq!(next().await, "event: mouth\ndata: open\n\n");
 
-        outputs.set_image(Mouth::Open, Arc::from(&b"o"[..]));
+        outputs.set_image(Mouth::Open, Arc::from(&b"o"[..]), "image/png");
         assert_eq!(
             next().await,
             "event: images\ndata: {\"rev\":2,\"closed\":true,\"open\":true}\n\n"
