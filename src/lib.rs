@@ -1,5 +1,6 @@
 pub mod app;
 pub mod avatar;
+pub mod blink;
 pub mod calibration;
 #[cfg(feature = "sound")]
 pub mod capture;

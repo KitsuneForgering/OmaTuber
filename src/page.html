@@ -14,6 +14,8 @@
 <body>
 <img class="avatar" id="closed" alt="">
 <img class="avatar" id="open" alt="">
+<img class="avatar" id="blinkClosed" alt="">
+<img class="avatar" id="blinkOpen" alt="">
 <img class="avatar" id="quiet" alt="">
 <img class="avatar" id="talking" alt="">
 <div id="objects"></div>
@@ -22,8 +24,12 @@
   // message the stream is presumed dead and the mouth closes.
   const STALE_MS = 3000;
   const img = {};
-  for (const k of ["closed", "open", "quiet", "talking"]) img[k] = document.getElementById(k);
-  const has = { closed: false, open: false, quiet: false, talking: false };
+  for (const k of ["closed", "open", "blinkClosed", "blinkOpen", "quiet", "talking"]) {
+    img[k] = document.getElementById(k);
+  }
+  const has = { closed: false, open: false, blinkClosed: false, blinkOpen: false, quiet: false, talking: false };
+  // Eyes closed right now; decided by the app (blink.rs) so preview and OBS agree.
+  let blinking = false;
   const objectsBox = document.getElementById("objects");
   let mouth = "closed";
   let scene = { rev: 0, sentiment: null, objects: [] };
@@ -42,7 +48,9 @@
       if (open && has.talking) return "talking";
       if (has.quiet) return "quiet";
     }
-    return open && has.open ? "open" : "closed";
+    const base = open && has.open ? "open" : "closed";
+    const blinked = base === "open" ? "blinkOpen" : "blinkClosed";
+    return blinking && has[blinked] ? blinked : base;
   }
 
   // Both base images share one canvas at one scale (layout.rs): the canvas
@@ -92,6 +100,8 @@
     const c = canvasRect();
     placeBase(img.closed, sizes[0], [0, 0], c);
     placeBase(img.open, sizes[1], offset, c);
+    placeBase(img.blinkClosed, sizes[0], [0, 0], c);
+    placeBase(img.blinkOpen, sizes[1], offset, c);
     placeContained(img.quiet, c);
     placeContained(img.talking, c);
     placeObjects(c);
@@ -112,6 +122,9 @@
   events.addEventListener("images", (e) => {
     const d = JSON.parse(e.data);
     for (const k of ["closed", "open"]) setSrc(k, d[k] ? `/${k}.png?rev=${d.rev}` : null);
+    const blink = d.blink || [false, false];
+    setSrc("blinkClosed", blink[0] ? `/blink-closed.png?rev=${d.rev}` : null);
+    setSrc("blinkOpen", blink[1] ? `/blink-open.png?rev=${d.rev}` : null);
     sizes = d.sizes || [null, null];
     offset = d.offset || [0, 0];
     alive();
@@ -135,6 +148,10 @@
       return el;
     }));
     alive();
+    render();
+  });
+  events.addEventListener("blink", (e) => {
+    blinking = e.data === "1";
     render();
   });
   events.addEventListener("mouth", (e) => {

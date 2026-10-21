@@ -48,6 +48,8 @@ pub struct Images {
     pub sizes: [Option<[u32; 2]>; 2],
     /// Offset of the open image on that canvas, in its pixels.
     pub offset: crate::layout::Offset,
+    /// Optional eyes-closed versions of [closed, open], same sizes as those.
+    pub blink: [Option<Served>; 2],
 }
 
 /// Sentiment and objects drawn instead of or over the base avatar, already
@@ -87,6 +89,8 @@ pub struct SceneObject {
 #[derive(Clone)]
 pub struct Outputs {
     mouth: watch::Sender<Mouth>,
+    /// Eyes closed right now (`blink.rs` decides when).
+    blink: watch::Sender<bool>,
     images: watch::Sender<Images>,
     scene: watch::Sender<Scene>,
     /// Validated files by key; the only files `/asset/{key}` can return.
@@ -99,6 +103,7 @@ impl Default for Outputs {
     fn default() -> Self {
         Self {
             mouth: watch::Sender::new(Mouth::Closed),
+            blink: watch::Sender::new(false),
             images: watch::Sender::new(Images::default()),
             scene: watch::Sender::new(Scene::default()),
             assets: Arc::default(),
@@ -108,6 +113,23 @@ impl Default for Outputs {
 }
 
 impl Outputs {
+    pub fn blinking(&self) -> bool {
+        *self.blink.borrow()
+    }
+
+    pub fn set_blink(&self, on: bool) {
+        self.blink
+            .send_if_modified(|b| std::mem::replace(b, on) != on);
+    }
+
+    /// Sets or clears the eyes-closed image for one mouth state.
+    pub fn set_blink_image(&self, mouth: Mouth, image: Option<Served>) {
+        self.images.send_modify(|images| {
+            images.blink[mouth as usize] = image;
+            images.rev += 1;
+        });
+    }
+
     pub fn mouth(&self) -> Mouth {
         *self.mouth.borrow()
     }
@@ -196,6 +218,8 @@ pub fn router(outputs: Outputs) -> Router {
         .route("/", get(|| async { Html(PAGE) }))
         .route("/closed.png", get(|s| image(s, Mouth::Closed)))
         .route("/open.png", get(|s| image(s, Mouth::Open)))
+        .route("/blink-closed.png", get(|s| blink_image(s, Mouth::Closed)))
+        .route("/blink-open.png", get(|s| blink_image(s, Mouth::Open)))
         .route("/events", get(events))
         .route("/asset/{key}", get(asset))
         .route("/react/{name}", post(react))
@@ -209,6 +233,15 @@ async fn image(State(outputs): State<Outputs>, mouth: Mouth) -> Response {
         Mouth::Closed => images.closed.clone(),
         Mouth::Open => images.open.clone(),
     };
+    served(png)
+}
+
+async fn blink_image(State(outputs): State<Outputs>, mouth: Mouth) -> Response {
+    let png = outputs.images.borrow().blink[mouth as usize].clone();
+    served(png)
+}
+
+fn served(png: Option<Served>) -> Response {
     match png {
         Some((bytes, mime)) => (
             [
@@ -301,6 +334,7 @@ async fn events(
 
 struct Subscriber {
     mouth: watch::Receiver<Mouth>,
+    blink: watch::Receiver<bool>,
     images: watch::Receiver<Images>,
     scene: watch::Receiver<Scene>,
     heartbeat: Interval,
@@ -310,17 +344,20 @@ struct Subscriber {
 
 fn event_stream(outputs: Outputs) -> impl Stream<Item = Result<Event, Infallible>> {
     let mut mouth = outputs.mouth.subscribe();
+    let mut blink = outputs.blink.subscribe();
     let mut images = outputs.images.subscribe();
     let mut scene = outputs.scene.subscribe();
     // Popped from the end: images, then scene, then the mouth state, so the
     // page has something to show when the state arrives.
     let pending = vec![
         mouth_event(*mouth.borrow_and_update()),
+        blink_event(*blink.borrow_and_update()),
         scene_event(&scene.borrow_and_update()),
         images_event(&images.borrow_and_update()),
     ];
     let sub = Subscriber {
         mouth,
+        blink,
         images,
         scene,
         heartbeat: interval_at(Instant::now() + HEARTBEAT, HEARTBEAT),
@@ -334,10 +371,17 @@ fn event_stream(outputs: Outputs) -> impl Stream<Item = Result<Event, Infallible
             Ok(()) = sub.images.changed() => images_event(&sub.images.borrow_and_update()),
             Ok(()) = sub.scene.changed() => scene_event(&sub.scene.borrow_and_update()),
             Ok(()) = sub.mouth.changed() => mouth_event(*sub.mouth.borrow_and_update()),
+            Ok(()) = sub.blink.changed() => blink_event(*sub.blink.borrow_and_update()),
             _ = sub.heartbeat.tick() => mouth_event(*sub.mouth.borrow()),
         };
         Some((Ok(event), sub))
     })
+}
+
+fn blink_event(on: bool) -> Event {
+    Event::default()
+        .event("blink")
+        .data(if on { "1" } else { "0" })
 }
 
 fn mouth_event(mouth: Mouth) -> Event {
@@ -360,6 +404,7 @@ fn images_event(images: &Images) -> Event {
         "open": images.open.is_some(),
         "sizes": images.sizes,
         "offset": images.offset,
+        "blink": [images.blink[0].is_some(), images.blink[1].is_some()],
     });
     Event::default().event("images").data(data.to_string())
 }
@@ -450,13 +495,17 @@ mod tests {
 
         assert_eq!(
             next().await,
-            "event: images\ndata: {\"closed\":true,\"offset\":[0,0],\"open\":false,\"rev\":1,\"sizes\":[null,null]}\n\n"
+            "event: images\ndata: {\"blink\":[false,false],\"closed\":true,\"offset\":[0,0],\"open\":false,\"rev\":1,\"sizes\":[null,null]}\n\n"
         );
         assert_eq!(
             next().await,
             "event: scene\ndata: {\"rev\":0,\"sentiment\":null,\"objects\":[],\"assets\":0}\n\n"
         );
+        assert_eq!(next().await, "event: blink\ndata: 0\n\n");
         assert_eq!(next().await, "event: mouth\ndata: closed\n\n");
+
+        outputs.set_blink(true);
+        assert_eq!(next().await, "event: blink\ndata: 1\n\n");
 
         outputs.set_mouth(Mouth::Open);
         assert_eq!(next().await, "event: mouth\ndata: open\n\n");
@@ -464,7 +513,7 @@ mod tests {
         outputs.set_image(Mouth::Open, Arc::from(&b"o"[..]), "image/png");
         assert_eq!(
             next().await,
-            "event: images\ndata: {\"closed\":true,\"offset\":[0,0],\"open\":true,\"rev\":2,\"sizes\":[null,null]}\n\n"
+            "event: images\ndata: {\"blink\":[false,false],\"closed\":true,\"offset\":[0,0],\"open\":true,\"rev\":2,\"sizes\":[null,null]}\n\n"
         );
 
         outputs.set_scene(Scene {
