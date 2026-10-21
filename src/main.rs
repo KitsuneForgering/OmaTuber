@@ -56,6 +56,8 @@ struct App {
     /// Sound detection; dropping it stops the microphone.
     #[cfg(feature = "sound")]
     voice: Option<omatuber::voice::Handle>,
+    #[cfg(feature = "sound")]
+    teach: Teach,
     view: ViewState,
     /// Configured file per slot, kept even when loading it failed.
     paths: [Option<PathBuf>; 2],
@@ -128,6 +130,8 @@ impl App {
             reactions,
             #[cfg(feature = "sound")]
             voice: None,
+            #[cfg(feature = "sound")]
+            teach: Teach::default(),
             view: ViewState {
                 palette,
                 obs_port: saved.obs_port,
@@ -337,6 +341,11 @@ impl App {
                     .send(reactions::Command::ToggleObject(id));
             }
             Action::SetVoice(on) => self.set_voice(ctx, on),
+            Action::RecordExample(_)
+            | Action::RemoveLastExample(_)
+            | Action::TrainSounds
+            | Action::AcceptModel
+            | Action::DiscardModel => self.teach_action(ctx, action),
         }
     }
 
@@ -390,6 +399,121 @@ impl App {
     #[cfg(not(feature = "sound"))]
     fn set_voice(&mut self, _ctx: &egui::Context, _on: bool) {}
 
+    #[cfg(not(feature = "sound"))]
+    fn teach_action(&mut self, _ctx: &egui::Context, _action: Action) {}
+
+    /// Recording and training run on threads; results come back through
+    /// `self.teach.rx`. A trained model waits in `pending` until accepted.
+    #[cfg(feature = "sound")]
+    fn teach_action(&mut self, ctx: &egui::Context, action: Action) {
+        use omatuber::{sound, training};
+        let data = match sound::data_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                self.view.library.voice.teach_message = Some(e);
+                return;
+            }
+        };
+        let v = &mut self.view.library.voice;
+        v.teach_message = None;
+        let tx = self.teach.tx.clone();
+        let repaint = ctx.clone();
+        match action {
+            Action::RecordExample(class) => {
+                v.recording = Some(class.clone());
+                let source = std::env::var("OMATUBER_SOURCE").ok();
+                std::thread::spawn(move || {
+                    let result = training::record(source, std::time::Duration::from_millis(2500))
+                        .and_then(|samples| training::save_clip(&data, &class, &samples))
+                        .map(|_| format!("Exemplo de {class} salvo."));
+                    let _ = tx.send(TeachMsg::Recorded(result));
+                    repaint.request_repaint();
+                });
+            }
+            Action::RemoveLastExample(class) => {
+                if let Err(e) = training::remove_last(&data, &class) {
+                    v.teach_message = Some(e);
+                }
+                self.refresh_examples();
+            }
+            Action::TrainSounds => {
+                v.training = true;
+                v.report = None;
+                std::thread::spawn(move || {
+                    let _ = tx.send(TeachMsg::Trained(training::train(&data)));
+                    repaint.request_repaint();
+                });
+            }
+            Action::AcceptModel => {
+                let Some(model) = self.teach.pending.take() else {
+                    return;
+                };
+                v.report = None;
+                match training::accept(&data, &model) {
+                    Ok(()) => {
+                        v.classes = omatuber::voice::reaction_classes(&model);
+                        v.teach_message = Some("Modelo novo em uso.".to_owned());
+                        // Restart listening so it uses the new model.
+                        if self.voice.is_some() {
+                            self.set_voice(ctx, false);
+                            self.view.library.voice.enabled = true;
+                            self.set_voice(ctx, true);
+                        }
+                    }
+                    Err(e) => {
+                        v.teach_message = Some(format!("Não foi possível salvar o modelo: {e}"))
+                    }
+                }
+            }
+            Action::DiscardModel => {
+                self.teach.pending = None;
+                v.report = None;
+                v.teach_message = Some("Modelo descartado; o anterior continua em uso.".to_owned());
+            }
+            _ => {}
+        }
+    }
+
+    #[cfg(feature = "sound")]
+    fn receive_teach(&mut self) {
+        while let Ok(msg) = self.teach.rx.try_recv() {
+            let v = &mut self.view.library.voice;
+            match msg {
+                TeachMsg::Recorded(result) => {
+                    v.recording = None;
+                    v.teach_message = Some(result.unwrap_or_else(|e| e));
+                    self.refresh_examples();
+                }
+                TeachMsg::Trained(Ok(report)) => {
+                    v.training = false;
+                    v.report = Some(omatuber::library_view::TrainingReport {
+                        per_class: report
+                            .classes
+                            .iter()
+                            .zip(&report.correct)
+                            .zip(&report.clips)
+                            .map(|((c, ok), n)| (c.clone(), *ok, *n))
+                            .collect(),
+                        warnings: report.warnings.clone(),
+                    });
+                    self.teach.pending = Some(report.model);
+                }
+                TeachMsg::Trained(Err(e)) => {
+                    v.training = false;
+                    v.teach_message = Some(e);
+                }
+            }
+        }
+    }
+
+    /// Example counts from disk, keeping sounds added in the editor that
+    /// have no examples yet.
+    #[cfg(feature = "sound")]
+    fn refresh_examples(&mut self) {
+        let v = &mut self.view.library.voice;
+        v.examples = example_counts(&v.examples);
+    }
+
     fn apply_library(&mut self) {
         let mut lib = self.view.library.draft.clone();
         lib.sanitize();
@@ -421,6 +545,8 @@ impl App {
                 LibLoaded::Texture(_, Err(_)) => {}
             }
         }
+        #[cfg(feature = "sound")]
+        self.receive_teach();
         #[cfg(feature = "sound")]
         if let Some(handle) = &self.voice {
             let st = handle.status.borrow().clone();
@@ -552,11 +678,62 @@ fn initial_voice_view() -> omatuber::library_view::VoiceView {
         omatuber::library_view::VoiceView {
             available: true,
             classes,
+            examples: example_counts(&[]),
             ..Default::default()
         }
     }
     #[cfg(not(feature = "sound"))]
     omatuber::library_view::VoiceView::default()
+}
+
+#[cfg(feature = "sound")]
+struct Teach {
+    tx: Sender<TeachMsg>,
+    rx: Receiver<TeachMsg>,
+    /// Trained model awaiting acceptance.
+    pending: Option<omatuber::sound::Model>,
+}
+
+#[cfg(feature = "sound")]
+impl Default for Teach {
+    fn default() -> Self {
+        let (tx, rx) = channel();
+        Self {
+            tx,
+            rx,
+            pending: None,
+        }
+    }
+}
+
+#[cfg(feature = "sound")]
+enum TeachMsg {
+    Recorded(Result<String, String>),
+    Trained(Result<omatuber::training::Report, String>),
+}
+
+/// Saved examples per sound, plus suggested and editor-added sounds with
+/// none yet, in a stable order.
+#[cfg(feature = "sound")]
+fn example_counts(keep: &[(String, usize)]) -> Vec<(String, usize)> {
+    let saved = omatuber::sound::data_dir()
+        .map(|d| omatuber::training::clips(&d))
+        .unwrap_or_default();
+    let mut names: Vec<String> = omatuber::library_view::SUGGESTED_SOUNDS
+        .iter()
+        .map(|s| s.to_string())
+        .chain(keep.iter().map(|(c, _)| c.clone()))
+        .chain(saved.keys().cloned())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .map(|c| {
+            let n = saved.get(&c).map_or(0, Vec::len);
+            (c, n)
+        })
+        .collect()
 }
 
 /// Results from library background threads.

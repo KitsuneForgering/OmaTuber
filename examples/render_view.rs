@@ -186,7 +186,7 @@ fn main() {
     let mut scenes = scenes;
     scenes.push(Scene {
         name: "8-library",
-        size: [1100.0, 1100.0],
+        size: [1100.0, 1500.0],
         status: live(-40.0, Mouth::Closed),
         state: ViewState {
             page: Page::Library,
@@ -200,6 +200,21 @@ fn main() {
                     running: true,
                     classes: vec!["risada".to_owned(), "susto".to_owned()],
                     heard: Some(("risada".to_owned(), 0.82)),
+                    examples: vec![
+                        ("fala".to_owned(), 4),
+                        ("outros".to_owned(), 5),
+                        ("risada".to_owned(), 4),
+                        ("susto".to_owned(), 2),
+                    ],
+                    report: Some(omatuber::library_view::TrainingReport {
+                        per_class: vec![
+                            ("fala".to_owned(), 4, 4),
+                            ("outros".to_owned(), 4, 5),
+                            ("risada".to_owned(), 4, 4),
+                            ("susto".to_owned(), 0, 2),
+                        ],
+                        warnings: vec!["susto: só 2 exemplo(s); grave pelo menos 3".to_owned()],
+                    }),
                     ..Default::default()
                 },
                 ..Default::default()

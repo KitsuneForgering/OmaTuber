@@ -101,7 +101,17 @@ pub enum Action {
     ToggleObject(Uuid),
     /// Start or stop listening for trained sounds.
     SetVoice(bool),
+    /// Record one 2.5 s example of this sound.
+    RecordExample(String),
+    RemoveLastExample(String),
+    TrainSounds,
+    AcceptModel,
+    DiscardModel,
 }
+
+/// Examples per sound below which the editor highlights the count; mirrors
+/// `training::MIN_CLIPS`, which is only built with the `sound` feature.
+pub const MIN_TEACH_CLIPS: usize = 3;
 
 /// Where the preview's mouth comes from right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

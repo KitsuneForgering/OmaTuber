@@ -51,7 +51,27 @@ pub struct VoiceView {
     /// Trained classes a sentiment can be bound to.
     pub classes: Vec<String>,
     pub heard: Option<(String, f32)>,
+    /// Saved examples per sound, including suggested sounds with none yet.
+    pub examples: Vec<(String, usize)>,
+    pub new_class: String,
+    /// Sound being recorded right now.
+    pub recording: Option<String>,
+    pub training: bool,
+    /// Training result waiting for **Usar este modelo** or **Descartar**.
+    pub report: Option<TrainingReport>,
+    pub teach_message: Option<String>,
 }
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TrainingReport {
+    /// (sound, recognised, examples)
+    pub per_class: Vec<(String, usize, usize)>,
+    pub warnings: Vec<String>,
+}
+
+/// Sounds offered before anything is recorded: one reaction example and the
+/// two background classes the classifier needs.
+pub const SUGGESTED_SOUNDS: [&str; 3] = ["risada", "fala", "outros"];
 
 impl LibraryView {
     pub fn dirty(&self) -> bool {
@@ -447,7 +467,140 @@ fn voice_section(ui: &mut egui::Ui, p: &Palette, voice: &mut VoiceView, actions:
                     .color(p.muted),
             );
         }
+        // A pending result or work in progress must not hide behind a fold.
+        let busy = voice.report.is_some() || voice.recording.is_some() || voice.training;
+        egui::CollapsingHeader::new("Ensinar sons")
+            .id_salt("teach")
+            .default_open(voice.classes.is_empty())
+            .open(busy.then_some(true))
+            .show(ui, |ui| teach(ui, p, voice, actions));
     });
+}
+
+fn teach(ui: &mut egui::Ui, p: &Palette, voice: &mut VoiceView, actions: &mut Vec<Action>) {
+    ui.add(
+        egui::Label::new(
+            RichText::new(
+                "Grave pelo menos 3 exemplos de cada som. Grave também \"fala\" (você falando normalmente) \
+                 e \"outros\" (teclado, cliques, música), para o avatar não reagir a qualquer barulho. \
+                 Cada gravação dura 2,5 s e começa ao clicar.",
+            )
+            .color(p.muted),
+        )
+        .wrap(),
+    );
+    let busy = voice.recording.is_some() || voice.training;
+    egui::Grid::new("teach-grid")
+        .num_columns(4)
+        .spacing([12.0, 6.0])
+        .show(ui, |ui| {
+            for (class, count) in &voice.examples {
+                ui.label(class.as_str());
+                let color = if *count >= crate::view::MIN_TEACH_CLIPS {
+                    p.foreground
+                } else {
+                    p.yellow
+                };
+                ui.label(RichText::new(format!("{count} exemplo(s)")).color(color));
+                let recording_this = voice.recording.as_deref() == Some(class.as_str());
+                let label = if recording_this {
+                    "Gravando…".to_owned()
+                } else {
+                    format!("Gravar {class}")
+                };
+                if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
+                    actions.push(Action::RecordExample(class.clone()));
+                }
+                let remove =
+                    ui.add_enabled(!busy && *count > 0, egui::Button::new("Apagar último"));
+                remove.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::Role::Button,
+                        true,
+                        format!("Apagar último exemplo de {class}"),
+                    )
+                });
+                if remove.clicked() {
+                    actions.push(Action::RemoveLastExample(class.clone()));
+                }
+                ui.end_row();
+            }
+        });
+    ui.horizontal(|ui| {
+        let label = ui.label("Novo som");
+        ui.add(
+            egui::TextEdit::singleline(&mut voice.new_class)
+                .desired_width(140.0)
+                .hint_text("ex.: susto"),
+        )
+        .labelled_by(label.id);
+        let name = voice.new_class.trim().to_lowercase();
+        let valid = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            && !voice.examples.iter().any(|(c, _)| *c == name);
+        if ui
+            .add_enabled(valid, egui::Button::new("Adicionar"))
+            .clicked()
+        {
+            voice.examples.push((name, 0));
+            voice.new_class.clear();
+        }
+    });
+    if let Some(msg) = &voice.teach_message {
+        ui.add(egui::Label::new(RichText::new(msg.as_str()).color(p.muted)).wrap());
+    }
+    let trainable = voice.examples.iter().filter(|(_, n)| *n >= 2).count() >= 2;
+    ui.horizontal(|ui| {
+        let text = if voice.training {
+            "Treinando…"
+        } else {
+            "Treinar"
+        };
+        if ui
+            .add_enabled(!busy && trainable, accent(p, text))
+            .on_disabled_hover_text("Precisa de pelo menos 2 sons com 2 exemplos cada")
+            .clicked()
+        {
+            actions.push(Action::TrainSounds);
+        }
+        ui.label(
+            RichText::new("O modelo atual continua funcionando durante o treino.")
+                .small()
+                .color(p.muted),
+        );
+    });
+    if let Some(report) = &voice.report {
+        let (right, total) = report
+            .per_class
+            .iter()
+            .fold((0, 0), |(r, t), (_, ok, n)| (r + ok, t + n));
+        egui::Frame::new()
+            .fill(p.sunken.gamma_multiply(0.7))
+            .corner_radius(8)
+            .inner_margin(10)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(format!(
+                "Reconheceu {right} de {total} exemplos (cada um testado sem ser usado no treino)"
+            )).strong());
+                for (class, ok, n) in &report.per_class {
+                    ui.label(format!("{class}: {ok} de {n}"));
+                }
+                for w in &report.warnings {
+                    ui.add(egui::Label::new(RichText::new(w.as_str()).color(p.yellow)).wrap());
+                }
+                ui.horizontal(|ui| {
+                    if ui.add(accent(p, "Usar este modelo")).clicked() {
+                        actions.push(Action::AcceptModel);
+                    }
+                    if ui.button("Descartar").clicked() {
+                        actions.push(Action::DiscardModel);
+                    }
+                });
+            });
+    }
 }
 
 fn accent(p: &Palette, text: &str) -> egui::Button<'static> {

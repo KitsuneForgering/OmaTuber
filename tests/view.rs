@@ -295,3 +295,110 @@ mod library_editor {
         assert!(draft.sentiments[0].objects.is_empty());
     }
 }
+
+mod teaching {
+    use super::*;
+    use omatuber::library_view::{TrainingReport, VoiceView};
+    use omatuber::view::Page;
+
+    fn harness_with(voice: VoiceView) -> Harness<'static, (ViewState, Vec<Action>)> {
+        let mut h = harness(idle());
+        let s = &mut h.state_mut().0;
+        s.page = Page::Library;
+        s.library.voice = voice;
+        h.run();
+        h
+    }
+
+    fn examples(list: &[(&str, usize)]) -> Vec<(String, usize)> {
+        list.iter().map(|(c, n)| (c.to_string(), *n)).collect()
+    }
+
+    #[test]
+    fn record_and_train_follow_example_counts() {
+        let mut h = harness_with(VoiceView {
+            available: true,
+            examples: examples(&[("fala", 0), ("outros", 2), ("risada", 1)]),
+            ..Default::default()
+        });
+        h.get_by_label("Gravar risada").click();
+        h.run();
+        assert_eq!(h.state().1, [Action::RecordExample("risada".to_owned())]);
+
+        // Only one sound has 2 examples: training stays disabled.
+        h.state_mut().1.clear();
+        h.get_by_label("Treinar").click();
+        h.run();
+        assert!(h.state().1.is_empty());
+
+        h.state_mut().0.library.voice.examples = examples(&[("outros", 2), ("risada", 2)]);
+        h.run();
+        h.get_by_label("Treinar").click();
+        h.run();
+        assert_eq!(h.state().1, [Action::TrainSounds]);
+    }
+
+    #[test]
+    fn nothing_can_start_while_recording() {
+        let mut h = harness_with(VoiceView {
+            available: true,
+            examples: examples(&[("outros", 3), ("risada", 3)]),
+            recording: Some("risada".to_owned()),
+            ..Default::default()
+        });
+        h.get_by_label("Gravar outros").click();
+        h.get_by_label("Treinar").click();
+        h.run();
+        assert!(h.state().1.is_empty());
+    }
+
+    #[test]
+    fn report_waits_for_a_decision() {
+        let mut h = harness_with(VoiceView {
+            available: true,
+            examples: examples(&[("outros", 3), ("risada", 3)]),
+            report: Some(TrainingReport {
+                per_class: vec![("outros".to_owned(), 3, 3), ("risada".to_owned(), 2, 3)],
+                warnings: vec!["Grave também \"fala\"".to_owned()],
+            }),
+            ..Default::default()
+        });
+        h.get_by_label("Reconheceu 5 de 6 exemplos (cada um testado sem ser usado no treino)");
+        h.get_by_label("Usar este modelo").click();
+        h.run();
+        h.get_by_label("Descartar").click();
+        h.run();
+        assert_eq!(h.state().1, [Action::AcceptModel, Action::DiscardModel]);
+    }
+
+    #[test]
+    fn new_sound_names_are_validated() {
+        let mut h = harness_with(VoiceView {
+            available: true,
+            examples: examples(&[("risada", 0)]),
+            new_class: "Susto".to_owned(),
+            ..Default::default()
+        });
+        h.get_by_label("Adicionar").click();
+        h.run();
+        let names: Vec<_> = h
+            .state()
+            .0
+            .library
+            .voice
+            .examples
+            .iter()
+            .map(|(c, _)| c.clone())
+            .collect();
+        assert_eq!(names, ["risada", "susto"], "lowercased and added");
+        h.state_mut().0.library.voice.new_class = "risada".to_owned();
+        h.run();
+        h.get_by_label("Adicionar").click();
+        h.run();
+        assert_eq!(
+            h.state().0.library.voice.examples.len(),
+            2,
+            "duplicate refused"
+        );
+    }
+}
