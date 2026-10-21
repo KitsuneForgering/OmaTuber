@@ -2,6 +2,7 @@
 //! without opening a window on the desktop.
 //!
 //!     cargo run --example render_view -- <output-dir>
+//!     OMATUBER_THEME=/usr/share/omarchy/themes/white/colors.toml cargo run --example render_view -- <dir>
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -46,7 +47,11 @@ fn main() {
             .expect("usage: render_view <output-dir>"),
     );
     std::fs::create_dir_all(&out).unwrap();
-    let palette = theme::load(theme::omarchy_colors_path().as_deref());
+    // OMATUBER_THEME=/path/to/colors.toml renders with another theme.
+    let theme_path = std::env::var_os("OMATUBER_THEME")
+        .map(PathBuf::from)
+        .or_else(theme::omarchy_colors_path);
+    let palette = theme::load(theme_path.as_deref());
     let mic = Uuid::from_u128(1);
     let inputs = vec![
         AudioInput {

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <title>OmaTuber</title>
+  <rect width="256" height="256" rx="56" fill="#1d2026"/>
+  <path d="M52 112 L62 26 L118 78 Z" fill="#f28c38"/>
+  <path d="M204 112 L194 26 L138 78 Z" fill="#f28c38"/>
+  <path d="M64 96 L70 50 L104 82 Z" fill="#2b212b"/>
+  <path d="M192 96 L186 50 L152 82 Z" fill="#2b212b"/>
+  <ellipse cx="128" cy="146" rx="88" ry="78" fill="#f28c38"/>
+  <ellipse cx="128" cy="186" rx="48" ry="33" fill="#fbeedc"/>
+  <ellipse cx="92" cy="138" rx="9" ry="12" fill="#2b212b"/>
+  <ellipse cx="164" cy="138" rx="9" ry="12" fill="#2b212b"/>
+  <ellipse cx="128" cy="168" rx="9" ry="6" fill="#2b212b"/>
+  <ellipse cx="128" cy="194" rx="17" ry="15" fill="#2b212b"/>
+  <ellipse cx="128" cy="201" rx="10" ry="6" fill="#f07a8a"/>
+</svg>

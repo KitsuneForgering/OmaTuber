@@ -50,6 +50,7 @@ struct App {
     paths: [Option<PathBuf>; 2],
     loaded_tx: Sender<Loaded>,
     loaded_rx: Receiver<Loaded>,
+    theme_rx: Receiver<theme::Palette>,
     last_connection: Connection,
     prefs_path: Option<PathBuf>,
     /// Last state written to disk; a save happens when the current one differs.
@@ -60,6 +61,7 @@ impl App {
     fn new(runtime: tokio::runtime::Runtime, ctx: &egui::Context) -> Self {
         let palette = theme::load(theme::omarchy_colors_path().as_deref());
         theme::apply(ctx, &palette);
+        let theme_rx = watch_theme(ctx.clone());
 
         let outputs = Outputs::default();
         let obs = {
@@ -111,6 +113,7 @@ impl App {
             paths: [None, None],
             loaded_tx,
             loaded_rx,
+            theme_rx,
             last_connection: Connection::Idle,
             prefs_path,
             saved: saved.clone(),
@@ -297,6 +300,38 @@ impl App {
     }
 }
 
+/// Polls the Omarchy theme file once a second and sends a new palette when its
+/// contents change, so switching themes restyles the open window. Reading a
+/// ~1 KiB file per second is cheaper than wiring up inotify for a directory
+/// that Omarchy replaces wholesale on theme change.
+fn watch_theme(ctx: egui::Context) -> Receiver<theme::Palette> {
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let path = theme::omarchy_colors_path();
+        let read = || {
+            path.as_deref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+        };
+        let mut last = read();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let now = read();
+            if now != last {
+                let palette = now
+                    .as_deref()
+                    .map(theme::parse)
+                    .unwrap_or_else(|| theme::load(None));
+                if tx.send(palette).is_err() {
+                    return; // window closed
+                }
+                ctx.request_repaint();
+                last = now;
+            }
+        }
+    });
+    rx
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name()
         .unwrap_or(path.as_os_str())
@@ -308,6 +343,10 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.receive_loaded(&ctx);
+        if let Some(palette) = self.theme_rx.try_iter().last() {
+            theme::apply(&ctx, &palette);
+            self.view.palette = palette;
+        }
         let status = self.obs.status.borrow().clone();
         self.follow_connection(&status.connection);
         for action in view::draw(ui, &mut self.view, &status) {

@@ -343,7 +343,7 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
 }
 
 fn accent_button(p: &Palette, text: &str) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(text.to_owned()).color(p.background)).fill(p.accent)
+    egui::Button::new(RichText::new(text.to_owned()).color(p.on_accent)).fill(p.accent)
 }
 
 /// Badge in the stage's top-left and state caption in its bottom-left.
@@ -736,6 +736,19 @@ fn checklist_card(
                             .monospace()
                             .small()
                             .color(p.muted),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(36.0);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                "Mantenha o OmaTuber aberto durante a transmissão; pode minimizá-lo.",
+                            )
+                            .small()
+                            .color(p.muted),
+                        )
+                        .wrap(),
                     );
                 });
                 if copied {

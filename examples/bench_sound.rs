@@ -44,6 +44,12 @@ fn main() {
     let hop_ms = WINDOW_HOP_SAMPLES as f64 * 1e3 / SAMPLE_RATE as f64;
     let median = per_run[per_run.len() / 2];
     println!("windows per run: {windows}, hop {hop_ms:.0} ms");
-    println!("ms per window: min {:.3}, median {median:.3}, max {:.3}", per_run[0], per_run[4]);
-    println!("CPU share of one core at real time: {:.2}%", median / hop_ms * 100.0);
+    println!(
+        "ms per window: min {:.3}, median {median:.3}, max {:.3}",
+        per_run[0], per_run[4]
+    );
+    println!(
+        "CPU share of one core at real time: {:.2}%",
+        median / hop_ms * 100.0
+    );
 }

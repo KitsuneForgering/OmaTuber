@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OmaTuber
+GenericName=PNGTuber avatar
+Comment=Avatar que reage à sua voz, para o OBS
+Exec=omatuber
+Icon=omatuber
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=pngtuber;vtuber;avatar;obs;stream;
+StartupWMClass=omatuber
