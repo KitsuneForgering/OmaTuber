@@ -15,6 +15,7 @@ use eframe::egui::{
 };
 use uuid::Uuid;
 
+use crate::library_view::{FileTarget, LibraryView};
 use crate::mouth::{GateParams, Mouth};
 use crate::obs::{Connection, Status};
 use crate::theme::Palette;
@@ -71,6 +72,15 @@ pub struct ViewState {
     pub show_connection: bool,
     /// UI time at which the URL was copied, for a short confirmation.
     pub copied_at: Option<f64>,
+    pub page: Page,
+    pub library: LibraryView,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Page {
+    #[default]
+    Avatar,
+    Library,
 }
 
 #[derive(Debug, PartialEq)]
@@ -83,6 +93,12 @@ pub enum Action {
     Dropped(Mouth, PathBuf),
     UseExample,
     RetryServer,
+    PickLibraryFile(FileTarget),
+    /// Save the draft library and send it to the reactions task.
+    ApplyLibrary,
+    TriggerSentiment(Uuid),
+    ClearReaction,
+    ToggleObject(Uuid),
 }
 
 /// Where the preview's mouth comes from right now.
@@ -172,6 +188,10 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, status: &Status) -> Vec<Action
         egui::ScrollArea::vertical().show(ui, |ui| {
             header(ui, s, status);
             ui.add_space(12.0);
+            if s.page == Page::Library {
+                crate::library_view::draw(ui, s, &mut actions);
+                return;
+            }
             let width = ui.available_width();
             if width >= TWO_COLUMNS_MIN {
                 let gap = 16.0;
@@ -215,6 +235,14 @@ fn header(ui: &mut egui::Ui, s: &mut ViewState, status: &Status) {
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             mode_badge(ui, &p, mode(s, status));
+            ui.add_space(12.0);
+            let dirty = if s.library.dirty() { " •" } else { "" };
+            ui.selectable_value(
+                &mut s.page,
+                Page::Library,
+                format!("Reações e objetos{dirty}"),
+            );
+            ui.selectable_value(&mut s.page, Page::Avatar, "Avatar");
         });
     });
 }
@@ -312,22 +340,44 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
         } else {
             &s.slots[1 - shown as usize]
         };
-        if let (Some((texture, next)), Some([w, h])) = (slot.texture_at(now), slot.size) {
-            if let Some(next) = next {
-                ui.ctx().request_repaint_after(next);
-            }
+        // An active sentiment replaces the base, as on the browser source.
+        let base = slot
+            .texture_at(now)
+            .zip(slot.size)
+            .map(|((t, next), size)| {
+                if let Some(next) = next {
+                    ui.ctx().request_repaint_after(next);
+                }
+                (t, size)
+            });
+        if let Some((texture, [w, h])) = sentiment_image(s, shown).or(base) {
             let inner = stage.shrink(16.0);
             let scale = (inner.width() / w as f32).min(inner.height() / h as f32);
             let img = Rect::from_center_size(inner.center(), vec2(w as f32, h as f32) * scale);
-            painter.image(
-                texture.id(),
-                img,
-                Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
+            let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
+            painter.image(texture.id(), img, uv, Color32::WHITE);
+            // Objects: center and width as fractions of the drawn avatar.
+            let lib = &s.library;
+            for id in &lib.objects_on {
+                let Some(o) = lib.applied.object(*id) else {
+                    continue;
+                };
+                let Some((tex, [ow, oh])) = lib.textures.get(&o.file) else {
+                    continue;
+                };
+                let width = o.scale * img.width();
+                let size = vec2(width, width * *oh as f32 / *ow as f32);
+                let center = img.min + vec2(o.x * img.width(), o.y * img.height());
+                painter.image(
+                    tex.id(),
+                    Rect::from_center_size(center, size),
+                    uv,
+                    Color32::WHITE,
+                );
+            }
         }
         if has_images {
-            stage_caption(&painter, &p, stage, shown, m);
+            stage_caption(&painter, &p, stage, shown, m, active_label(s).as_deref());
         } else {
             painter.text(
                 stage.center() - vec2(0.0, 30.0),
@@ -364,12 +414,39 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
     });
 }
 
+/// The active sentiment's image for this mouth, chosen as the browser page
+/// does: talking image with an open mouth if there is one, else quiet.
+fn sentiment_image(s: &ViewState, shown: Mouth) -> Option<(&TextureHandle, [u32; 2])> {
+    let lib = &s.library;
+    let sentiment = lib.applied.sentiment(lib.active?.0)?;
+    let talking = sentiment.talking.as_ref().filter(|_| shown == Mouth::Open);
+    let file = talking.or(sentiment.quiet.as_ref())?;
+    lib.textures.get(file).map(|(t, size)| (t, *size))
+}
+
+/// "Animado · Atalho" while a sentiment is on air.
+fn active_label(s: &ViewState) -> Option<String> {
+    let (id, source) = s.library.active?;
+    let name = &s.library.applied.sentiment(id)?.name;
+    Some(format!(
+        "{name} · {}",
+        crate::library_view::source_label(source)
+    ))
+}
+
 fn accent_button(p: &Palette, text: &str) -> egui::Button<'static> {
     egui::Button::new(RichText::new(text.to_owned()).color(p.on_accent)).fill(p.accent)
 }
 
 /// Badge in the stage's top-left and state caption in its bottom-left.
-fn stage_caption(painter: &egui::Painter, p: &Palette, stage: Rect, shown: Mouth, m: Mode) {
+fn stage_caption(
+    painter: &egui::Painter,
+    p: &Palette,
+    stage: Rect,
+    shown: Mouth,
+    m: Mode,
+    reaction: Option<&str>,
+) {
     let (badge, badge_color) = match m {
         Mode::Live => ("VOZ AO VIVO", p.green),
         Mode::Test => ("TESTE MANUAL", p.yellow),
@@ -396,7 +473,10 @@ fn stage_caption(painter: &egui::Painter, p: &Palette, stage: Rect, shown: Mouth
         Mode::Test => "prévia apenas, não altera o OBS",
         Mode::NoSignal | Mode::NoObs => "sem leitura ao vivo",
     };
-    let text = format!("{state}  ·  {detail}");
+    let text = match reaction {
+        Some(reaction) => format!("{reaction}  ·  {state}"),
+        None => format!("{state}  ·  {detail}"),
+    };
     let dot = if shown == Mouth::Open {
         p.accent
     } else {
@@ -444,6 +524,8 @@ fn overlay_pill(
 
 fn thumbnails(ui: &mut egui::Ui, s: &mut ViewState, shown: Mouth, actions: &mut Vec<Action>) {
     let p = s.palette;
+    // While a sentiment fills the stage, neither base image is on screen.
+    let sentiment_on = sentiment_image(s, shown).is_some();
     let gap = 12.0;
     let width = ui.available_width();
     let w = (width - gap) / 2.0;
@@ -482,7 +564,7 @@ fn thumbnails(ui: &mut egui::Ui, s: &mut ViewState, shown: Mouth, actions: &mut 
         if response.clicked() && !s.picking {
             actions.push(Action::Pick(slot_mouth));
         }
-        let active = shown == slot_mouth && slot.texture.is_some();
+        let active = !sentiment_on && shown == slot_mouth && slot.texture.is_some();
         let hovered = response.hovered() || (hovering_files && under_pointer(&rect));
         let painter = ui.painter_at(rect.expand(2.0));
         let fill = if active {

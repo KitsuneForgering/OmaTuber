@@ -25,6 +25,8 @@ fn state() -> ViewState {
         prefs_error: None,
         show_connection: true,
         copied_at: None,
+        page: Default::default(),
+        library: Default::default(),
     }
 }
 
@@ -202,4 +204,94 @@ fn cause_explains_each_state() {
     assert!(view::cause(&s, &gone).contains("ativa na cena"));
     s.selected = Some(Uuid::from_u128(1));
     assert!(view::cause(&s, &live()).contains("não existe mais"));
+}
+
+mod library_editor {
+    use super::*;
+    use omatuber::library::{Library, Sentiment, Source};
+    use omatuber::view::Page;
+
+    fn harness_on_library(lib: Library) -> Harness<'static, (ViewState, Vec<Action>)> {
+        let mut h = harness(idle());
+        let s = &mut h.state_mut().0;
+        s.page = Page::Library;
+        s.library.draft = lib.clone();
+        s.library.applied = lib;
+        h.run();
+        h
+    }
+
+    #[test]
+    fn edits_stay_in_draft_until_applied_and_can_be_undone() {
+        let mut h = harness_on_library(Library::default());
+        h.get_by_label("Adicionar sentimento").click();
+        h.run();
+        assert_eq!(h.state().0.library.draft.sentiments.len(), 1);
+        assert!(h.state().0.library.dirty());
+        assert!(h.state().1.is_empty(), "nothing sent before Aplicar");
+
+        h.get_by_label("Desfazer").click();
+        h.run();
+        assert!(!h.state().0.library.dirty());
+        assert!(h.state().0.library.draft.sentiments.is_empty());
+
+        h.get_by_label("Adicionar sentimento").click();
+        h.run();
+        h.get_by_label("Aplicar").click();
+        h.run();
+        assert_eq!(h.state().1, [Action::ApplyLibrary]);
+    }
+
+    #[test]
+    fn show_now_needs_the_sentiment_applied() {
+        let applied = Sentiment::new("Animado");
+        let id = applied.id;
+        let mut h = harness_on_library(Library {
+            sentiments: vec![applied],
+            objects: vec![],
+        });
+        h.get_by_label("Adicionar sentimento").click();
+        h.run();
+        // Two "Mostrar agora" buttons: the applied one works, the new one is disabled.
+        let buttons = h.get_all_by_label("Mostrar agora").collect::<Vec<_>>();
+        assert_eq!(buttons.len(), 2);
+        buttons[1].click();
+        h.run();
+        assert!(h.state().1.is_empty());
+        h.get_all_by_label("Mostrar agora").next().unwrap().click();
+        h.run();
+        assert_eq!(h.state().1, [Action::TriggerSentiment(id)]);
+    }
+
+    #[test]
+    fn on_air_banner_offers_return_to_base() {
+        let applied = Sentiment::new("Animado");
+        let id = applied.id;
+        let mut h = harness_on_library(Library {
+            sentiments: vec![applied],
+            objects: vec![],
+        });
+        h.state_mut().0.library.active = Some((id, Source::Shortcut));
+        h.run();
+        h.get_by_label("No ar: Animado · Atalho");
+        h.get_by_label("Voltar à base").click();
+        h.run();
+        assert_eq!(h.state().1, [Action::ClearReaction]);
+    }
+
+    #[test]
+    fn removing_an_object_unlinks_it_from_sentiments() {
+        let obj = omatuber::library::Object::new("Caneca", "c.png".into());
+        let mut s = Sentiment::new("Animado");
+        s.objects = vec![obj.id];
+        let mut h = harness_on_library(Library {
+            sentiments: vec![s],
+            objects: vec![obj],
+        });
+        h.get_all_by_label("Remover").last().unwrap().click();
+        h.run();
+        let draft = &h.state().0.library.draft;
+        assert!(draft.objects.is_empty());
+        assert!(draft.sentiments[0].objects.is_empty());
+    }
 }

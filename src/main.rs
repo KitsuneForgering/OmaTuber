@@ -4,12 +4,13 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use eframe::egui::{self, TextureOptions};
 use omatuber::avatar::{self, LoadError, Png};
 use omatuber::example;
+use omatuber::library_view::{FileTarget, LibraryView};
 use omatuber::mouth::{GateParams, Mouth};
 use omatuber::obs::{self, Command, Connection};
 use omatuber::prefs::{self, Prefs};
 use omatuber::server::{self, Outputs};
 use omatuber::theme;
-use omatuber::view::{self, Action, FLOOR_DB, HYSTERESIS_DB, SlotView, ViewState};
+use omatuber::view::{self, Action, FLOOR_DB, HYSTERESIS_DB, Page, SlotView, ViewState};
 use omatuber::{cli, library, reactions};
 
 fn main() -> eframe::Result {
@@ -51,7 +52,6 @@ struct App {
     outputs: Outputs,
     obs: obs::Handle,
     /// Library reactions; the editor will send `Apply` and read its status.
-    #[allow(dead_code)]
     reactions: reactions::Handle,
     view: ViewState,
     /// Configured file per slot, kept even when loading it failed.
@@ -59,6 +59,8 @@ struct App {
     loaded_tx: Sender<Loaded>,
     loaded_rx: Receiver<Loaded>,
     theme_rx: Receiver<theme::Palette>,
+    lib_tx: Sender<LibLoaded>,
+    lib_rx: Receiver<LibLoaded>,
     last_connection: Connection,
     prefs_path: Option<PathBuf>,
     /// Last state written to disk; a save happens when the current one differs.
@@ -89,7 +91,9 @@ impl App {
         let reactions = {
             let _guard = runtime.enter();
             let ctx = ctx.clone();
-            reactions::spawn(outputs.clone(), library, move || ctx.request_repaint())
+            reactions::spawn(outputs.clone(), library.clone(), move || {
+                ctx.request_repaint()
+            })
         };
 
         let prefs_path = prefs::default_path();
@@ -113,6 +117,7 @@ impl App {
         let _ = obs.commands.send(Command::Select(saved.audio_input));
 
         let (loaded_tx, loaded_rx) = channel();
+        let (lib_tx, lib_rx) = channel();
         let mut app = Self {
             runtime,
             outputs,
@@ -132,16 +137,25 @@ impl App {
                 // The password is not saved, so every session starts here.
                 show_connection: true,
                 copied_at: None,
+                page: Page::Avatar,
+                library: LibraryView {
+                    draft: library.clone(),
+                    applied: library.clone(),
+                    ..Default::default()
+                },
             },
             paths: [None, None],
             loaded_tx,
             loaded_rx,
             theme_rx,
+            lib_tx,
+            lib_rx,
             last_connection: Connection::Idle,
             prefs_path,
             saved: saved.clone(),
         };
         app.start_server();
+        app.load_library_textures(ctx, &library);
         for (mouth, path) in [
             (Mouth::Closed, saved.closed_png),
             (Mouth::Open, saved.open_png),
@@ -285,6 +299,37 @@ impl App {
             Action::Dropped(mouth, path) => self.load_async(ctx, mouth, Some(path)),
             Action::UseExample => self.use_example(ctx),
             Action::RetryServer => self.start_server(),
+            Action::PickLibraryFile(target) => {
+                let tx = self.lib_tx.clone();
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let picked = rfd::FileDialog::new()
+                        .add_filter("PNG", &["png"])
+                        .pick_file();
+                    if let Some(path) = picked {
+                        let _ = tx.send(LibLoaded::Picked(target, path.clone()));
+                        let _ = tx.send(LibLoaded::Texture(path.clone(), first_frame(&path)));
+                        ctx.request_repaint();
+                    }
+                });
+            }
+            Action::ApplyLibrary => self.apply_library(),
+            Action::TriggerSentiment(id) => {
+                let _ = self.reactions.commands.send(reactions::Command::Trigger {
+                    target: id.to_string(),
+                    source: library::Source::Manual,
+                    reply: None,
+                });
+            }
+            Action::ClearReaction => {
+                let _ = self.reactions.commands.send(reactions::Command::Clear);
+            }
+            Action::ToggleObject(id) => {
+                let _ = self
+                    .reactions
+                    .commands
+                    .send(reactions::Command::ToggleObject(id));
+            }
         }
     }
 
@@ -305,6 +350,69 @@ impl App {
                 self.view.slots[0].error = Some(format!("Não foi possível criar o exemplo: {e}"));
             }
         }
+    }
+
+    fn apply_library(&mut self) {
+        let mut lib = self.view.library.draft.clone();
+        lib.sanitize();
+        self.view.library.save_error = library::default_path().and_then(|path| {
+            library::save(&path, &lib)
+                .err()
+                .map(|e| format!("Aplicado, mas não foi possível salvar: {e}"))
+        });
+        let _ = self
+            .reactions
+            .commands
+            .send(reactions::Command::Apply(lib.clone()));
+        self.view.library.applied = lib.clone();
+        self.view.library.draft = lib;
+    }
+
+    /// Picked files and decoded thumbnails from background threads, and the
+    /// reactions task's state.
+    fn receive_library(&mut self, ctx: &egui::Context) {
+        while let Ok(msg) = self.lib_rx.try_recv() {
+            match msg {
+                LibLoaded::Picked(target, path) => self.view.library.set_file(target, path),
+                LibLoaded::Texture(path, Ok((image, size))) => {
+                    let name = format!("library-{}", path.display());
+                    let texture = ctx.load_texture(name, image, TextureOptions::LINEAR);
+                    self.view.library.textures.insert(path, (texture, size));
+                }
+                // The reactions task reports the reason next to the item.
+                LibLoaded::Texture(_, Err(_)) => {}
+            }
+        }
+        let status = self.reactions.status.borrow().clone();
+        let lib = &mut self.view.library;
+        lib.errors = status.errors;
+        lib.active = status.active;
+        lib.objects_on = status.objects;
+    }
+
+    /// Decodes thumbnails for every file of `lib` not loaded yet.
+    fn load_library_textures(&self, ctx: &egui::Context, lib: &library::Library) {
+        let mut paths: Vec<PathBuf> = lib
+            .sentiments
+            .iter()
+            .flat_map(|s| [s.quiet.clone(), s.talking.clone()])
+            .flatten()
+            .chain(lib.objects.iter().map(|o| o.file.clone()))
+            .filter(|p| !p.as_os_str().is_empty() && !self.view.library.textures.contains_key(p))
+            .collect();
+        paths.sort();
+        paths.dedup();
+        if paths.is_empty() {
+            return;
+        }
+        let tx = self.lib_tx.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            for path in paths {
+                let _ = tx.send(LibLoaded::Texture(path.clone(), first_frame(&path)));
+            }
+            ctx.request_repaint();
+        });
     }
 
     /// Opens the connection panel when it needs attention and folds it away
@@ -381,6 +489,20 @@ fn watch_theme(ctx: egui::Context) -> Receiver<theme::Palette> {
     rx
 }
 
+/// Results from library background threads.
+enum LibLoaded {
+    Picked(FileTarget, PathBuf),
+    Texture(PathBuf, Result<(egui::ColorImage, [u32; 2]), String>),
+}
+
+/// First frame of an image file, decoded for a thumbnail.
+fn first_frame(path: &Path) -> Result<(egui::ColorImage, [u32; 2]), String> {
+    let png = avatar::load(path, avatar::Limits::default()).map_err(|e| e.to_string())?;
+    let size = [png.width as usize, png.height as usize];
+    let image = egui::ColorImage::from_rgba_unmultiplied(size, &png.frames[0].rgba);
+    Ok((image, [png.width, png.height]))
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name()
         .unwrap_or(path.as_os_str())
@@ -392,6 +514,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.receive_loaded(&ctx);
+        self.receive_library(&ctx);
         if let Some(palette) = self.theme_rx.try_iter().last() {
             theme::apply(&ctx, &palette);
             self.view.palette = palette;

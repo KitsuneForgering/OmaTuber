@@ -139,7 +139,12 @@ async fn apply(
         wanted.extend(s.quiet.clone().map(|p| (s.id, key(s.id, "-q"), p)));
         wanted.extend(s.talking.clone().map(|p| (s.id, key(s.id, "-t"), p)));
     }
-    for o in &new.objects {
+    // An object without a file yet is unfinished, not broken.
+    for o in new
+        .objects
+        .iter()
+        .filter(|o| !o.file.as_os_str().is_empty())
+    {
         wanted.push((o.id, key(o.id, ""), o.file.clone()));
     }
     let loaded = tokio::task::spawn_blocking(move || {

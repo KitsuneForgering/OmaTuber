@@ -9,9 +9,11 @@ use std::time::Duration;
 
 use eframe::egui::{ColorImage, TextureOptions};
 use egui_kittest::Harness;
+use omatuber::library::{Ending, Library, Object, Sentiment, Source};
+use omatuber::library_view::LibraryView;
 use omatuber::mouth::{GateParams, Mouth};
 use omatuber::obs::{AudioInput, Connection, Status};
-use omatuber::view::{self, SlotView, ViewState};
+use omatuber::view::{self, Page, SlotView, ViewState};
 use omatuber::{example, theme};
 use uuid::Uuid;
 
@@ -37,6 +39,8 @@ fn base(palette: theme::Palette) -> ViewState {
         prefs_error: None,
         show_connection: false,
         copied_at: None,
+        page: Default::default(),
+        library: Default::default(),
     }
 }
 
@@ -82,7 +86,7 @@ fn main() {
         ..base(palette)
     };
 
-    let scenes = vec![
+    let scenes: Vec<Scene> = vec![
         Scene {
             name: "1-first-run",
             size: [1100.0, 760.0],
@@ -162,6 +166,63 @@ fn main() {
         },
     ];
 
+    // Library page: two sentiments (one on air by shortcut) and an object.
+    let mut lib = Library::default();
+    let mut happy = Sentiment::new("Animado");
+    happy.quiet = Some("falando.png".into());
+    happy.talking = Some("falando.png".into());
+    let mut tired = Sentiment::new("Cansado");
+    tired.quiet = Some("quieto.png".into());
+    tired.ending = Ending::UntilNext;
+    tired.priority = 2;
+    let mug = Object::new("Caneca", "quieto.png".into());
+    happy.objects = vec![mug.id];
+    let on_air = happy.id;
+    lib.sentiments = vec![happy, tired];
+    lib.objects = vec![mug];
+    let mut draft = lib.clone();
+    draft.sentiments[1].name = "Cansado demais".to_owned();
+    let mut scenes = scenes;
+    scenes.push(Scene {
+        name: "8-library",
+        size: [1100.0, 1100.0],
+        status: live(-40.0, Mouth::Closed),
+        state: ViewState {
+            page: Page::Library,
+            library: LibraryView {
+                draft,
+                applied: lib,
+                active: Some((on_air, Source::Shortcut)),
+                ..Default::default()
+            },
+            ..configured()
+        },
+        images: true,
+    });
+
+    // Main page with that sentiment on air and its object shown.
+    let mut applied = scenes.last().unwrap().state.library.applied.clone();
+    applied.objects[0].x = 0.78;
+    applied.objects[0].y = 0.8;
+    applied.objects[0].scale = 0.35;
+    let mug_id = applied.objects[0].id;
+    scenes.push(Scene {
+        name: "9-live-reaction",
+        size: [1100.0, 760.0],
+        status: live(-17.0, Mouth::Open),
+        state: ViewState {
+            library: LibraryView {
+                draft: applied.clone(),
+                applied,
+                active: Some((on_air, Source::Shortcut)),
+                objects_on: vec![mug_id],
+                ..Default::default()
+            },
+            ..configured()
+        },
+        images: true,
+    });
+
     for scene in scenes {
         let Scene {
             name,
@@ -182,6 +243,16 @@ fn main() {
                         state.slots[i].size = Some([size[0] as u32, size[1] as u32]);
                         state.slots[i].file =
                             Some(if open { "falando.png" } else { "quieto.png" }.to_owned());
+                        let tex = ui.ctx().load_texture(
+                            format!("lib{i}"),
+                            ColorImage::from_rgba_unmultiplied(size, img.as_raw()),
+                            TextureOptions::LINEAR,
+                        );
+                        let file = if open { "falando.png" } else { "quieto.png" };
+                        state
+                            .library
+                            .textures
+                            .insert(file.into(), (tex, [size[0] as u32, size[1] as u32]));
                         state.slots[i].texture = Some(ui.ctx().load_texture(
                             format!("f{i}"),
                             color,

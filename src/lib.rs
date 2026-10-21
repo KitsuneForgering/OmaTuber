@@ -4,6 +4,7 @@ pub mod capture;
 pub mod cli;
 pub mod example;
 pub mod library;
+pub mod library_view;
 pub mod meter;
 pub mod mouth;
 pub mod obs;
