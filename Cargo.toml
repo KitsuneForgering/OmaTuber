@@ -36,6 +36,7 @@ required-features = ["sound"]
 base64 = "0.22"
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot", "eframe"] }
 http-body-util = "0.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 png = "0.18"
 sha2 = "0.10"
 tokio = { version = "1", features = ["test-util", "macros", "rt", "io-util", "net"] }

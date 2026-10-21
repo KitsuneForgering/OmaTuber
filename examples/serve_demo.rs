@@ -119,6 +119,24 @@ async fn main() {
     eprintln!("http://127.0.0.1:{port}/");
     tokio::spawn(server::serve(listener, outputs.clone()));
 
+    // DEMO_BLINK adds an eyes-closed version of the closed face and keeps
+    // the eyes closed, to check the page draws it.
+    if std::env::var_os("DEMO_BLINK").is_some() {
+        let mut img = image::load_from_memory(&face(false)).unwrap().into_rgba8();
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            let (fx, fy) = (x as f32 - 120.0, y as f32 - 150.0);
+            if [-40.0f32, 40.0]
+                .iter()
+                .any(|ex| (fx - ex).powi(2) + (fy + 25.0).powi(2) <= 110.0)
+            {
+                *px = Rgba([250, 214, 180, 255]);
+            }
+        }
+        let mut out = Cursor::new(Vec::new());
+        img.write_to(&mut out, ImageFormat::Png).unwrap();
+        outputs.set_blink_image(Mouth::Closed, Some((out.into_inner().into(), "image/png")));
+        outputs.set_blink(true);
+    }
     // DEMO_OPEN starts with the mouth open (use a long toggle to keep it).
     let mut mouth = if std::env::var_os("DEMO_OPEN").is_some() {
         Mouth::Open

@@ -30,6 +30,8 @@ fn state() -> ViewState {
         scene_choice: None,
         calibration: Default::default(),
         open_offset: [0, 0],
+        blink_slots: Default::default(),
+        blinking: false,
         secret_note: None,
         library: Default::default(),
     }
@@ -699,4 +701,23 @@ fn alignment_control_appears_for_different_sizes_and_resets() {
     h.run();
     assert_eq!(h.state().0.open_offset, [0, 0]);
     assert_eq!(h.state().1, [Action::SetOpenOffset([0, 0])]);
+}
+
+#[test]
+fn blink_row_picks_and_removes() {
+    let mut h = harness(idle());
+    h.run();
+    h.get_by_label("Escolher Falando piscando").click();
+    h.run();
+    h.state_mut().0.blink_slots[0].file = Some("olhos.png".to_owned());
+    h.run();
+    h.get_by_label("Remover Quieto piscando").click();
+    h.run();
+    assert_eq!(
+        h.state().1,
+        [
+            Action::PickBlink(Mouth::Open),
+            Action::ClearBlink(Mouth::Closed)
+        ]
+    );
 }

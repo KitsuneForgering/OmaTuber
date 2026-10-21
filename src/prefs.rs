@@ -21,6 +21,9 @@ pub struct Prefs {
     pub scene: Option<String>,
     /// Offset of the open image on the shared canvas (`layout.rs`).
     pub open_offset: crate::layout::Offset,
+    /// Optional eyes-closed versions of the two base images.
+    pub blink_closed_png: Option<PathBuf>,
+    pub blink_open_png: Option<PathBuf>,
 }
 
 impl Default for Prefs {
@@ -33,6 +36,8 @@ impl Default for Prefs {
             open_png: None,
             scene: None,
             open_offset: [0, 0],
+            blink_closed_png: None,
+            blink_open_png: None,
         }
     }
 }
@@ -110,6 +115,8 @@ mod tests {
             open_png: None,
             scene: Some("Principal".to_owned()),
             open_offset: [4, -2],
+            blink_closed_png: None,
+            blink_open_png: Some("/a/blink-open.png".into()),
         };
         save(&path, &prefs).unwrap();
         assert_eq!(load(&path).unwrap(), prefs);

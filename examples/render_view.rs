@@ -45,6 +45,8 @@ fn base(palette: theme::Palette) -> ViewState {
         scene_choice: None,
         calibration: Default::default(),
         open_offset: [0, 0],
+        blink_slots: Default::default(),
+        blinking: false,
         secret_note: None,
         library: Default::default(),
     }

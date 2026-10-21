@@ -259,3 +259,29 @@ fn first_use_from_example_to_scene() {
     drop(w);
     drop(obs_rt);
 }
+
+#[test]
+fn blink_images_are_served_and_must_match_their_base() {
+    let fx = Fixture::new("blink");
+    let [closed, open] = omatuber::example::write_to(&fx.dir.join("art")).unwrap();
+    // A 1×1 PNG can never line up with a 512×512 base.
+    let tiny = fx.dir.join("tiny.png");
+    image::RgbaImage::new(1, 1).save(&tiny).unwrap();
+    let prefs = serde_json::json!({
+        "closed_png": closed, "open_png": open,
+        "blink_closed_png": closed, "blink_open_png": tiny,
+    });
+    std::fs::write(fx.dir.join("prefs.json"), prefs.to_string()).unwrap();
+
+    let mut h = fx.harness();
+    h.run();
+    let url = server_url(&h);
+    assert_eq!(http_get(&url, "/blink-closed.png").0, 200);
+    assert_eq!(
+        http_get(&url, "/blink-open.png").0,
+        404,
+        "mismatched size refused"
+    );
+    h.get_by_label_contains("precisa ter o mesmo tamanho da imagem base (512×512)");
+    h.get_by_label("Quieto piscando: quieto.png");
+}

@@ -183,6 +183,11 @@ pub enum LoadError {
     /// Valid APNG/GIF, refused while animation support is still being
     /// validated in OBS.
     AnimationNotEnabled,
+    /// A blink image must line up with its base image.
+    SizeMismatch {
+        width: u32,
+        height: u32,
+    },
 }
 
 impl fmt::Display for LoadError {
@@ -210,6 +215,10 @@ impl fmt::Display for LoadError {
                 write!(f, "animação mais longa que {} s", max.as_secs())
             }
             Self::Decode(e) => write!(f, "imagem inválida: {e}"),
+            Self::SizeMismatch { width, height } => write!(
+                f,
+                "a imagem de piscar precisa ter o mesmo tamanho da imagem base ({width}×{height})"
+            ),
             Self::AnimationNotEnabled => write!(
                 f,
                 "animações (APNG e GIF) ainda estão em teste; use um PNG parado por enquanto"

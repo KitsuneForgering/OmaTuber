@@ -51,7 +51,24 @@ impl Config {
 }
 
 /// A finished file load; `None` when the dialog was cancelled.
-type Loaded = (Mouth, Option<(PathBuf, Result<Png, LoadError>)>);
+type Loaded = (Target, Option<(PathBuf, Result<Png, LoadError>)>);
+
+/// Which image a file is for: the base image of a mouth state, or its
+/// optional eyes-closed version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Target {
+    mouth: Mouth,
+    blink: bool,
+}
+
+impl Target {
+    fn base(mouth: Mouth) -> Self {
+        Self {
+            mouth,
+            blink: false,
+        }
+    }
+}
 
 /// The OmaTuber window: wires the view to the OBS worker, the reactions
 /// task, the local server and the files on disk.
@@ -70,6 +87,8 @@ pub struct App {
     view: ViewState,
     /// Configured file per slot, kept even when loading it failed.
     paths: [Option<PathBuf>; 2],
+    /// Same, for the optional eyes-closed images.
+    blink_paths: [Option<PathBuf>; 2],
     loaded_tx: Sender<Loaded>,
     loaded_rx: Receiver<Loaded>,
     theme_rx: Receiver<theme::Palette>,
@@ -168,6 +187,8 @@ impl App {
                 scene_choice: saved.scene.clone(),
                 calibration: Default::default(),
                 open_offset: saved.open_offset,
+                blink_slots: Default::default(),
+                blinking: false,
                 secret_note: None,
                 library: LibraryView {
                     draft: library.clone(),
@@ -176,6 +197,7 @@ impl App {
                 },
             },
             paths: [None, None],
+            blink_paths: [None, None],
             loaded_tx,
             loaded_rx,
             theme_rx,
@@ -194,14 +216,35 @@ impl App {
         app.view.library.voice = initial_voice_view();
         app.secret_op(SecretOp::Load);
         app.load_library_textures(ctx, &library, false);
-        for (mouth, path) in [
-            (Mouth::Closed, saved.closed_png),
-            (Mouth::Open, saved.open_png),
+        // Bases first: a blink image is checked against its base's size.
+        for (target, path) in [
+            (Target::base(Mouth::Closed), saved.closed_png),
+            (Target::base(Mouth::Open), saved.open_png),
+            (
+                Target {
+                    mouth: Mouth::Closed,
+                    blink: true,
+                },
+                saved.blink_closed_png,
+            ),
+            (
+                Target {
+                    mouth: Mouth::Open,
+                    blink: true,
+                },
+                saved.blink_open_png,
+            ),
         ] {
             if let Some(path) = path {
                 let result = avatar::load(&path, avatar::Limits::default());
-                app.apply_png(ctx, mouth, path, result);
+                app.apply_png(ctx, target, path, result);
             }
+        }
+        // Blinks are decided here and sent to every page (blink.rs).
+        {
+            let _guard = app.runtime.enter();
+            let ctx = ctx.clone();
+            crate::blink::spawn(app.outputs.clone(), move || ctx.request_repaint());
         }
         app
     }
@@ -233,7 +276,7 @@ impl App {
 
     /// Opens the portal file chooser (when `path` is `None`) and decodes the
     /// file off the UI thread, so the window keeps repainting.
-    fn load_async(&mut self, ctx: &egui::Context, mouth: Mouth, path: Option<PathBuf>) {
+    fn load_async(&mut self, ctx: &egui::Context, target: Target, path: Option<PathBuf>) {
         self.view.picking = true;
         let tx = self.loaded_tx.clone();
         let ctx = ctx.clone();
@@ -247,16 +290,16 @@ impl App {
                 let result = avatar::load(&path, avatar::Limits::default());
                 (path, result)
             });
-            let _ = tx.send((mouth, loaded));
+            let _ = tx.send((target, loaded));
             ctx.request_repaint();
         });
     }
 
     fn receive_loaded(&mut self, ctx: &egui::Context) {
-        while let Ok((mouth, loaded)) = self.loaded_rx.try_recv() {
+        while let Ok((target, loaded)) = self.loaded_rx.try_recv() {
             self.view.picking = false;
             if let Some((path, result)) = loaded {
-                self.apply_png(ctx, mouth, path, result);
+                self.apply_png(ctx, target, path, result);
             }
         }
     }
@@ -264,10 +307,11 @@ impl App {
     fn apply_png(
         &mut self,
         ctx: &egui::Context,
-        mouth: Mouth,
+        target: Target,
         path: PathBuf,
         result: Result<Png, LoadError>,
     ) {
+        let mouth = target.mouth;
         let i = mouth as usize;
         // Plan: animated formats stay out of the main flow until a recording in
         // OBS confirms timing, transparency and restarts. Testers opt in.
@@ -278,12 +322,27 @@ impl App {
                 Ok(png)
             }
         });
-        let slot = &mut self.view.slots[i];
+        // A blink image replaces its base for a moment, so it must line up.
+        let base_size = self.view.slots[i].size;
+        let result = result.and_then(|png| match base_size {
+            Some([w, h]) if target.blink && [png.width, png.height] != [w, h] => {
+                Err(LoadError::SizeMismatch {
+                    width: w,
+                    height: h,
+                })
+            }
+            _ => Ok(png),
+        });
+        let (slot, paths) = if target.blink {
+            (&mut self.view.blink_slots[i], &mut self.blink_paths)
+        } else {
+            (&mut self.view.slots[i], &mut self.paths)
+        };
         match result {
             Ok(png) => {
                 let mut textures = png.frames.iter().enumerate().map(|(f, frame)| {
                     let pixels = preview_image(&frame.rgba, png.width, png.height);
-                    let name = format!("avatar-{i}-{f}");
+                    let name = format!("avatar-{i}-{}-{f}", u8::from(target.blink));
                     (
                         ctx.load_texture(name, pixels, TextureOptions::LINEAR),
                         frame.delay,
@@ -300,8 +359,13 @@ impl App {
                 } else {
                     Vec::new()
                 };
-                self.outputs
-                    .set_image(mouth, png.bytes.clone(), png.kind.mime());
+                if target.blink {
+                    self.outputs
+                        .set_blink_image(mouth, Some((png.bytes.clone(), png.kind.mime())));
+                } else {
+                    self.outputs
+                        .set_image(mouth, png.bytes.clone(), png.kind.mime());
+                }
                 *slot = SlotView {
                     file: Some(file_name(&path)),
                     size: Some([png.width, png.height]),
@@ -310,7 +374,7 @@ impl App {
                     started: ctx.input(|i| i.time),
                     error: None,
                 };
-                self.paths[i] = Some(path);
+                paths[i] = Some(path);
             }
             Err(e) => {
                 slot.error = Some(format!("{}: {e}", file_name(&path)));
@@ -319,7 +383,7 @@ impl App {
                 // so a file that is temporarily missing at startup is not
                 // dropped from the saved preferences.
                 if slot.texture.is_none() {
-                    self.paths[i] = Some(path);
+                    paths[i] = Some(path);
                 }
             }
         }
@@ -336,8 +400,14 @@ impl App {
             Action::Disconnect => self.send(Command::Disconnect),
             Action::Select(uuid) => self.send(Command::Select(uuid)),
             Action::SetParams(params) => self.send(Command::SetParams(params)),
-            Action::Pick(mouth) => self.load_async(ctx, mouth, None),
-            Action::Dropped(mouth, path) => self.load_async(ctx, mouth, Some(path)),
+            Action::Pick(mouth) => self.load_async(ctx, Target::base(mouth), None),
+            Action::Dropped(mouth, path) => self.load_async(ctx, Target::base(mouth), Some(path)),
+            Action::PickBlink(mouth) => self.load_async(ctx, Target { mouth, blink: true }, None),
+            Action::ClearBlink(mouth) => {
+                self.view.blink_slots[mouth as usize] = SlotView::default();
+                self.blink_paths[mouth as usize] = None;
+                self.outputs.set_blink_image(mouth, None);
+            }
             Action::UseExample => self.use_example(ctx),
             Action::RetryServer => self.start_server(),
             Action::PickLibraryFile(target) => {
@@ -415,7 +485,7 @@ impl App {
             Ok(paths) => {
                 for (mouth, path) in [Mouth::Closed, Mouth::Open].into_iter().zip(paths) {
                     let result = avatar::load(&path, avatar::Limits::default());
-                    self.apply_png(ctx, mouth, path, result);
+                    self.apply_png(ctx, Target::base(mouth), path, result);
                 }
             }
             Err(e) => {
@@ -786,6 +856,8 @@ impl App {
             open_db: self.view.params.open_db,
             closed_png: self.paths[Mouth::Closed as usize].clone(),
             open_png: self.paths[Mouth::Open as usize].clone(),
+            blink_closed_png: self.blink_paths[Mouth::Closed as usize].clone(),
+            blink_open_png: self.blink_paths[Mouth::Open as usize].clone(),
             scene: self.view.scene_choice.clone(),
             open_offset: self.view.open_offset,
         }
@@ -962,6 +1034,8 @@ impl eframe::App for App {
         self.receive_loaded(&ctx);
         self.receive_library(&ctx);
         self.receive_secret();
+        // Same blink signal the pages get, so the preview blinks with OBS.
+        self.view.blinking = self.outputs.blinking();
         if let Some(palette) = self.theme_rx.try_iter().last() {
             theme::apply(&ctx, &palette);
             self.view.palette = palette;

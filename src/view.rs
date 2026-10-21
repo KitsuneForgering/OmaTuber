@@ -85,6 +85,10 @@ pub struct ViewState {
     /// Offset of the open image on the shared canvas, in its pixels
     /// (`layout.rs`), to align art drawn on different canvases.
     pub open_offset: crate::layout::Offset,
+    /// Optional eyes-closed versions of the base images.
+    pub blink_slots: [SlotView; 2],
+    /// Eyes closed right now; mirrors what the browser page received.
+    pub blinking: bool,
     /// Why remembering is unavailable or what just happened to the stored
     /// password; `None` when there is nothing to say.
     pub secret_note: Option<String>,
@@ -125,6 +129,8 @@ pub enum Action {
     StartCalibration,
     /// Nudge the open image on the shared canvas, in its pixels.
     SetOpenOffset(crate::layout::Offset),
+    PickBlink(Mouth),
+    ClearBlink(Mouth),
     /// Record one 2.5 s example of this sound.
     RecordExample(String),
     RemoveLastExample(String),
@@ -436,7 +442,13 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
         } else {
             1 - shown as usize
         };
-        let slot = &s.slots[index];
+        // Eyes closed: the blink version of this image, when there is one.
+        let blink = &s.blink_slots[index];
+        let slot = if s.blinking && blink.texture.is_some() {
+            blink
+        } else {
+            &s.slots[index]
+        };
         // An active sentiment replaces the base, as on the browser source.
         let base = slot
             .texture_at(now)
@@ -863,6 +875,52 @@ fn thumbnails(ui: &mut egui::Ui, s: &mut ViewState, shown: Mouth, actions: &mut 
         });
         ui.label(
             RichText::new("Segure \"testar a boca\" para ver a imagem Falando enquanto ajusta.")
+                .small()
+                .color(p.muted),
+        );
+    }
+    blink_row(ui, s, actions);
+}
+
+/// Optional eyes-closed images; the app blinks on its own every few seconds.
+fn blink_row(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
+    let p = s.palette;
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Piscar (opcional)");
+        for (mouth, label) in [
+            (Mouth::Closed, "Quieto piscando"),
+            (Mouth::Open, "Falando piscando"),
+        ] {
+            let slot = &s.blink_slots[mouth as usize];
+            let text = match &slot.file {
+                Some(file) => format!("{label}: {file}"),
+                None => format!("Escolher {label}"),
+            };
+            if ui
+                .add_enabled(!s.picking, egui::Button::new(text))
+                .clicked()
+            {
+                actions.push(Action::PickBlink(mouth));
+            }
+            if slot.file.is_some() {
+                let remove = ui.small_button("Remover");
+                remove.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Remover {label}"))
+                });
+                if remove.clicked() {
+                    actions.push(Action::ClearBlink(mouth));
+                }
+            }
+        }
+    });
+    for slot in &s.blink_slots {
+        if let Some(e) = &slot.error {
+            ui.add(egui::Label::new(RichText::new(e.as_str()).color(p.red)).wrap());
+        }
+    }
+    if s.blink_slots.iter().all(|b| b.file.is_none()) {
+        ui.label(
+            RichText::new("O mesmo desenho com os olhos fechados; o avatar pisca sozinho a cada poucos segundos.")
                 .small()
                 .color(p.muted),
         );
