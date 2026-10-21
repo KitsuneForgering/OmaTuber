@@ -172,6 +172,9 @@ pub struct Composition {
 pub struct Director {
     active: Option<Active>,
     toggled: BTreeSet<Uuid>,
+    /// Successful triggers so far; lets the page restart an animation when
+    /// the same sentiment fires again.
+    triggers: u64,
 }
 
 impl Director {
@@ -197,6 +200,7 @@ impl Director {
             priority: s.priority,
             until,
         });
+        self.triggers += 1;
         true
     }
 
@@ -219,6 +223,10 @@ impl Director {
         {
             self.active = None;
         }
+    }
+
+    pub fn triggers(&self) -> u64 {
+        self.triggers
     }
 
     /// Sentiment currently on screen and what triggered it. Expiry and

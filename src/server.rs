@@ -60,6 +60,9 @@ pub struct Scene {
 pub struct SceneSentiment {
     pub quiet: Option<String>,
     pub talking: Option<String>,
+    /// Changes on every trigger, even of the same sentiment, so the page
+    /// loads a fresh image and an APNG/GIF starts from its first frame.
+    pub trigger: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -438,12 +441,13 @@ mod tests {
             sentiment: Some(SceneSentiment {
                 quiet: Some("s-q".to_owned()),
                 talking: None,
+                trigger: 1,
             }),
             ..Scene::default()
         });
         assert_eq!(
             next().await,
-            "event: scene\ndata: {\"rev\":1,\"sentiment\":{\"quiet\":\"s-q\",\"talking\":null},\"objects\":[]}\n\n"
+            "event: scene\ndata: {\"rev\":1,\"sentiment\":{\"quiet\":\"s-q\",\"talking\":null,\"trigger\":1},\"objects\":[]}\n\n"
         );
 
         // Nothing changes: with time paused, the next event is the heartbeat.

@@ -207,7 +207,11 @@ fn publish(
     let sentiment = director.active().and_then(|(id, _)| {
         let quiet = available(key(id, "-q"));
         let talking = available(key(id, "-t"));
-        (quiet.is_some() || talking.is_some()).then_some(SceneSentiment { quiet, talking })
+        (quiet.is_some() || talking.is_some()).then_some(SceneSentiment {
+            quiet,
+            talking,
+            trigger: director.triggers(),
+        })
     });
     let objects = c
         .objects

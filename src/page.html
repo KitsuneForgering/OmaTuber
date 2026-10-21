@@ -85,8 +85,11 @@
   events.addEventListener("scene", (e) => {
     scene = JSON.parse(e.data);
     const url = (key) => (key ? `/asset/${encodeURIComponent(key)}?rev=${scene.rev}` : null);
-    setSrc("quiet", url(scene.sentiment && scene.sentiment.quiet));
-    setSrc("talking", url(scene.sentiment && scene.sentiment.talking));
+    // A new URL per trigger reloads the image, restarting an animation even
+    // when the same sentiment fires twice in a row.
+    const sentimentUrl = (key) => (key ? `${url(key)}&t=${scene.sentiment.trigger}` : null);
+    setSrc("quiet", sentimentUrl(scene.sentiment && scene.sentiment.quiet));
+    setSrc("talking", sentimentUrl(scene.sentiment && scene.sentiment.talking));
     // New elements each time, so an animated object starts from its first frame.
     objectsBox.replaceChildren(...scene.objects.map((o) => {
       const el = new Image();

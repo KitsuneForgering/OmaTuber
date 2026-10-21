@@ -84,6 +84,7 @@ async fn main() {
             sentiment: Some(server::SceneSentiment {
                 quiet: Some("s-q".to_owned()),
                 talking: None,
+                trigger: 1,
             }),
             objects: vec![server::SceneObject {
                 asset: "disc".to_owned(),

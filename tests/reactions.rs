@@ -219,3 +219,31 @@ async fn heard_sound_shows_its_sentiment_as_voice() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn retriggering_the_same_sentiment_changes_the_scene() {
+    let (dir, closed, open) = files("retrigger");
+    let outputs = Outputs::default();
+    reactions::spawn(outputs.clone(), library(closed, open, 60_000), || {});
+    assert_eq!(
+        post(&outputs, "/react/Animado", "127.0.0.1", true).await,
+        StatusCode::NO_CONTENT
+    );
+    let first = wait_until(&outputs, |s| s.sentiment.is_some()).await;
+    assert_eq!(
+        post(&outputs, "/react/Animado", "127.0.0.1", true).await,
+        StatusCode::NO_CONTENT
+    );
+    let first_trigger = first.sentiment.as_ref().unwrap().trigger;
+    let second = wait_until(&outputs, |s| {
+        s.sentiment
+            .as_ref()
+            .is_some_and(|x| x.trigger != first_trigger)
+    })
+    .await;
+    assert!(
+        second.rev > first.rev,
+        "a new scene event goes out, so the page reloads the image"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
