@@ -5,6 +5,7 @@ pub mod calibration;
 pub mod capture;
 pub mod cli;
 pub mod example;
+pub mod layout;
 pub mod library;
 pub mod library_view;
 pub mod meter;

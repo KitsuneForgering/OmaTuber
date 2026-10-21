@@ -44,6 +44,7 @@ fn base(palette: theme::Palette) -> ViewState {
         remember_password: false,
         scene_choice: None,
         calibration: Default::default(),
+        open_offset: [0, 0],
         secret_note: None,
         library: Default::default(),
     }

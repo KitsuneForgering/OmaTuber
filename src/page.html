@@ -5,7 +5,8 @@
 <title>OmaTuber</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
-  img.avatar { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; visibility: hidden; }
+  /* Positioned by layout() below, all on one shared canvas. */
+  img.avatar { position: absolute; visibility: hidden; }
   img.avatar.on { visibility: visible; }
   img.object { position: absolute; transform: translate(-50%, -50%); }
 </style>
@@ -26,6 +27,10 @@
   const objectsBox = document.getElementById("objects");
   let mouth = "closed";
   let scene = { rev: 0, sentiment: null, objects: [] };
+  // From the "images" event: pixel sizes of [closed, open] and the open
+  // image's offset. Mirrors src/layout.rs.
+  let sizes = [null, null];
+  let offset = [0, 0];
   let staleTimer;
 
   // Same rule as library::Director::compose: a sentiment replaces the base;
@@ -40,13 +45,36 @@
     return open && has.open ? "open" : "closed";
   }
 
-  // Where object-fit: contain actually drew the visible avatar.
-  function avatarRect(el) {
+  // Both base images share one canvas at one scale (layout.rs): the canvas
+  // spans both, each image is centered on it, the open one moved by offset.
+  function canvasRect() {
     const W = innerWidth, H = innerHeight;
-    if (!el || !el.naturalWidth) return { left: 0, top: 0, width: W, height: H };
-    const s = Math.min(W / el.naturalWidth, H / el.naturalHeight);
-    const width = el.naturalWidth * s, height = el.naturalHeight * s;
-    return { left: (W - width) / 2, top: (H - height) / 2, width, height };
+    const known = sizes.filter(Boolean);
+    if (!known.length) return { left: 0, top: 0, width: W, height: H, scale: 1, cw: W, ch: H };
+    const cw = Math.max(...known.map((s) => s[0])), ch = Math.max(...known.map((s) => s[1]));
+    const scale = Math.min(W / cw, H / ch);
+    const width = cw * scale, height = ch * scale;
+    return { left: (W - width) / 2, top: (H - height) / 2, width, height, scale, cw, ch };
+  }
+
+  function placeBase(el, size, off, c) {
+    if (!size) return;
+    const x = (c.cw - size[0]) / 2 + off[0], y = (c.ch - size[1]) / 2 + off[1];
+    Object.assign(el.style, {
+      left: `${c.left + x * c.scale}px`, top: `${c.top + y * c.scale}px`,
+      width: `${size[0] * c.scale}px`, height: `${size[1] * c.scale}px`,
+    });
+  }
+
+  // Sentiment images fit inside the canvas, centered, like object-fit: contain.
+  function placeContained(el, c) {
+    if (!el.naturalWidth) return;
+    const s = Math.min(c.width / el.naturalWidth, c.height / el.naturalHeight);
+    const w = el.naturalWidth * s, h = el.naturalHeight * s;
+    Object.assign(el.style, {
+      left: `${c.left + (c.width - w) / 2}px`, top: `${c.top + (c.height - h) / 2}px`,
+      width: `${w}px`, height: `${h}px`,
+    });
   }
 
   function placeObjects(rect) {
@@ -61,7 +89,12 @@
   function render() {
     const s = shown();
     for (const k in img) img[k].classList.toggle("on", k === s && has[k]);
-    placeObjects(avatarRect(has[s] ? img[s] : null));
+    const c = canvasRect();
+    placeBase(img.closed, sizes[0], [0, 0], c);
+    placeBase(img.open, sizes[1], offset, c);
+    placeContained(img.quiet, c);
+    placeContained(img.talking, c);
+    placeObjects(c);
   }
 
   function alive() {
@@ -79,6 +112,8 @@
   events.addEventListener("images", (e) => {
     const d = JSON.parse(e.data);
     for (const k of ["closed", "open"]) setSrc(k, d[k] ? `/${k}.png?rev=${d.rev}` : null);
+    sizes = d.sizes || [null, null];
+    offset = d.offset || [0, 0];
     alive();
     render();
   });

@@ -56,7 +56,27 @@ async fn main() {
         }
         None => outputs.set_image(Mouth::Closed, face(false), "image/png"),
     }
-    outputs.set_image(Mouth::Open, face(true), "image/png");
+    // DEMO_PAD=n draws the open face on a canvas n px larger on each side,
+    // as art exported from a different document would be.
+    let pad: u32 = std::env::var("DEMO_PAD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let open = if pad == 0 {
+        face(true)
+    } else {
+        let small = image::load_from_memory(&face(true)).unwrap().into_rgba8();
+        let mut big = RgbaImage::new(240 + 2 * pad, 280 + 2 * pad);
+        image::imageops::overlay(&mut big, &small, i64::from(pad), i64::from(pad));
+        let mut out = Cursor::new(Vec::new());
+        big.write_to(&mut out, ImageFormat::Png).unwrap();
+        out.into_inner().into()
+    };
+    outputs.set_image(Mouth::Open, open, "image/png");
+    outputs.set_layout(
+        [Some([240, 280]), Some([240 + 2 * pad, 280 + 2 * pad])],
+        [0, 0],
+    );
     // DEMO_SCENE=1 adds a sentiment (the open-mouth fox as its quiet image)
     // and a red disc object near the top of the avatar.
     if std::env::var_os("DEMO_SCENE").is_some() {
@@ -99,7 +119,13 @@ async fn main() {
     eprintln!("http://127.0.0.1:{port}/");
     tokio::spawn(server::serve(listener, outputs.clone()));
 
-    let mut mouth = Mouth::Closed;
+    // DEMO_OPEN starts with the mouth open (use a long toggle to keep it).
+    let mut mouth = if std::env::var_os("DEMO_OPEN").is_some() {
+        Mouth::Open
+    } else {
+        Mouth::Closed
+    };
+    outputs.set_mouth(mouth);
     loop {
         tokio::time::sleep(toggle).await;
         mouth = if mouth == Mouth::Open {

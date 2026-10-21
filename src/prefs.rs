@@ -19,6 +19,8 @@ pub struct Prefs {
     pub open_png: Option<PathBuf>,
     /// Scene to add the avatar to; `None` is the one on air.
     pub scene: Option<String>,
+    /// Offset of the open image on the shared canvas (`layout.rs`).
+    pub open_offset: crate::layout::Offset,
 }
 
 impl Default for Prefs {
@@ -30,6 +32,7 @@ impl Default for Prefs {
             closed_png: None,
             open_png: None,
             scene: None,
+            open_offset: [0, 0],
         }
     }
 }
@@ -106,6 +109,7 @@ mod tests {
             closed_png: Some("/a/closed.png".into()),
             open_png: None,
             scene: Some("Principal".to_owned()),
+            open_offset: [4, -2],
         };
         save(&path, &prefs).unwrap();
         assert_eq!(load(&path).unwrap(), prefs);

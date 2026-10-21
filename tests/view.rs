@@ -29,6 +29,7 @@ fn state() -> ViewState {
         remember_password: false,
         scene_choice: None,
         calibration: Default::default(),
+        open_offset: [0, 0],
         secret_note: None,
         library: Default::default(),
     }
@@ -677,4 +678,25 @@ mod keyboard {
         h.run();
         h.render().unwrap().save(out).unwrap();
     }
+}
+
+#[test]
+fn alignment_control_appears_for_different_sizes_and_resets() {
+    let mut h = harness(idle());
+    h.run();
+    assert!(
+        h.query_by_label("Centralizar").is_none(),
+        "hidden when nothing to align"
+    );
+    {
+        let s = &mut h.state_mut().0;
+        s.slots[0].size = Some([512, 512]);
+        s.slots[1].size = Some([600, 600]);
+        s.open_offset = [5, -3];
+    }
+    h.run();
+    h.get_by_label("Centralizar").click();
+    h.run();
+    assert_eq!(h.state().0.open_offset, [0, 0]);
+    assert_eq!(h.state().1, [Action::SetOpenOffset([0, 0])]);
 }

@@ -16,6 +16,7 @@ use eframe::egui::{
 use uuid::Uuid;
 
 use crate::calibration::{Problem, Suggestion};
+use crate::layout;
 use crate::library_view::{FileTarget, LibraryView};
 use crate::mouth::{GateParams, Mouth};
 use crate::obs::{Connection, Status};
@@ -81,6 +82,9 @@ pub struct ViewState {
     /// Scene to add the avatar to; `None` means the one on air.
     pub scene_choice: Option<String>,
     pub calibration: Calibration,
+    /// Offset of the open image on the shared canvas, in its pixels
+    /// (`layout.rs`), to align art drawn on different canvases.
+    pub open_offset: crate::layout::Offset,
     /// Why remembering is unavailable or what just happened to the stored
     /// password; `None` when there is nothing to say.
     pub secret_note: Option<String>,
@@ -119,6 +123,8 @@ pub enum Action {
     AddToScene,
     /// Begin guided calibration (silence, then speech).
     StartCalibration,
+    /// Nudge the open image on the shared canvas, in its pixels.
+    SetOpenOffset(crate::layout::Offset),
     /// Record one 2.5 s example of this sound.
     RecordExample(String),
     RemoveLastExample(String),
@@ -424,12 +430,13 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
         checkerboard(&painter, stage, &p);
         // Fall back to the other image so a half-configured avatar still shows.
         let now = ui.input(|i| i.time);
-        let slot = &s.slots[shown as usize];
-        let slot = if slot.texture.is_some() {
-            slot
+        // The image for this mouth, or the other one if it is missing.
+        let index = if s.slots[shown as usize].texture.is_some() {
+            shown as usize
         } else {
-            &s.slots[1 - shown as usize]
+            1 - shown as usize
         };
+        let slot = &s.slots[index];
         // An active sentiment replaces the base, as on the browser source.
         let base = slot
             .texture_at(now)
@@ -446,12 +453,43 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
             }
             (t, size)
         });
-        if let Some((texture, [w, h])) = sentiment.or(base) {
-            let inner = stage.shrink(16.0);
-            let scale = (inner.width() / w as f32).min(inner.height() / h as f32);
-            let img = Rect::from_center_size(inner.center(), vec2(w as f32, h as f32) * scale);
-            let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
-            painter.image(texture.id(), img, uv, Color32::WHITE);
+        let inner = stage.shrink(16.0);
+        let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
+        // Same geometry as the browser page (layout.rs): both base images on
+        // one canvas, one scale, the open one shifted by its offset.
+        let canvas = layout::canvas(s.slots[0].size, s.slots[1].size).map(|c| {
+            let (scale, o) = layout::fit(c, [inner.width(), inner.height()]);
+            let size = vec2(c.width as f32, c.height as f32) * scale;
+            (
+                c,
+                scale,
+                Rect::from_min_size(inner.min + vec2(o[0], o[1]), size),
+            )
+        });
+        let drawn = if let Some((texture, [w, h])) = sentiment {
+            // A sentiment fits inside the canvas, centered.
+            let area = canvas.map_or(inner, |(.., r)| r);
+            let scale = (area.width() / w as f32).min(area.height() / h as f32);
+            let rect = Rect::from_center_size(area.center(), vec2(w as f32, h as f32) * scale);
+            painter.image(texture.id(), rect, uv, Color32::WHITE);
+            Some(area)
+        } else if let (Some((texture, size)), Some((c, scale, area))) = (base, canvas) {
+            let offset = if index == Mouth::Open as usize {
+                s.open_offset
+            } else {
+                [0, 0]
+            };
+            let p = layout::place(c, size, offset);
+            let rect = Rect::from_min_size(
+                area.min + vec2(p.x, p.y) * scale,
+                vec2(p.width, p.height) * scale,
+            );
+            painter.image(texture.id(), rect, uv, Color32::WHITE);
+            Some(area)
+        } else {
+            None
+        };
+        if let Some(img) = drawn {
             // Objects: center and width as fractions of the drawn avatar.
             let lib = &s.library;
             for id in &lib.objects_on {
@@ -788,11 +826,45 @@ fn thumbnails(ui: &mut egui::Ui, s: &mut ViewState, shown: Mouth, actions: &mut 
         ui.add(
             egui::Label::new(
                 RichText::new(format!(
-                    "As imagens têm tamanhos diferentes ({a} × {b} e {c} × {d}); o avatar pode pular ao falar."
+                    "As imagens têm tamanhos diferentes ({a} × {b} e {c} × {d}). As duas ficam na mesma escala, centralizadas; ajuste abaixo se o rosto não coincidir."
                 ))
                 .color(p.yellow),
             )
             .wrap(),
+        );
+    }
+    // Shown when sizes differ or an offset is already set.
+    let sizes_differ = matches!((s.slots[0].size, s.slots[1].size), (Some(a), Some(b)) if a != b);
+    if sizes_differ || s.open_offset != [0, 0] {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Alinhar a imagem Falando");
+            let mut offset = s.open_offset;
+            let label = ui.label("horizontal");
+            ui.add(
+                egui::DragValue::new(&mut offset[0])
+                    .range(-2000..=2000)
+                    .suffix(" px"),
+            )
+            .labelled_by(label.id);
+            let label = ui.label("vertical");
+            ui.add(
+                egui::DragValue::new(&mut offset[1])
+                    .range(-2000..=2000)
+                    .suffix(" px"),
+            )
+            .labelled_by(label.id);
+            if ui.button("Centralizar").clicked() {
+                offset = [0, 0];
+            }
+            if offset != s.open_offset {
+                s.open_offset = offset;
+                actions.push(Action::SetOpenOffset(offset));
+            }
+        });
+        ui.label(
+            RichText::new("Segure \"testar a boca\" para ver a imagem Falando enquanto ajusta.")
+                .small()
+                .color(p.muted),
         );
     }
 }

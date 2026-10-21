@@ -44,6 +44,10 @@ pub struct Images {
     pub open: Option<Served>,
     /// Bumped on every change so the page can bypass its image cache.
     pub rev: u64,
+    /// Pixel sizes of [closed, open], for the shared canvas (`layout.rs`).
+    pub sizes: [Option<[u32; 2]>; 2],
+    /// Offset of the open image on that canvas, in its pixels.
+    pub offset: crate::layout::Offset,
 }
 
 /// Sentiment and objects drawn instead of or over the base avatar, already
@@ -155,6 +159,19 @@ impl Outputs {
                 Mouth::Open => images.open = served,
             }
             images.rev += 1;
+        });
+    }
+
+    /// Image sizes and the open image's offset, so the page draws both on
+    /// one canvas at one scale. Pages are only woken when these change.
+    pub fn set_layout(&self, sizes: [Option<[u32; 2]>; 2], offset: crate::layout::Offset) {
+        self.images.send_if_modified(|images| {
+            if images.sizes == sizes && images.offset == offset {
+                return false;
+            }
+            images.sizes = sizes;
+            images.offset = offset;
+            true
         });
     }
 }
@@ -337,13 +354,14 @@ fn scene_event(scene: &Scene) -> Event {
 }
 
 fn images_event(images: &Images) -> Event {
-    let data = format!(
-        r#"{{"rev":{},"closed":{},"open":{}}}"#,
-        images.rev,
-        images.closed.is_some(),
-        images.open.is_some()
-    );
-    Event::default().event("images").data(data)
+    let data = serde_json::json!({
+        "rev": images.rev,
+        "closed": images.closed.is_some(),
+        "open": images.open.is_some(),
+        "sizes": images.sizes,
+        "offset": images.offset,
+    });
+    Event::default().event("images").data(data.to_string())
 }
 
 #[cfg(test)]
@@ -432,7 +450,7 @@ mod tests {
 
         assert_eq!(
             next().await,
-            "event: images\ndata: {\"rev\":1,\"closed\":true,\"open\":false}\n\n"
+            "event: images\ndata: {\"closed\":true,\"offset\":[0,0],\"open\":false,\"rev\":1,\"sizes\":[null,null]}\n\n"
         );
         assert_eq!(
             next().await,
@@ -446,7 +464,7 @@ mod tests {
         outputs.set_image(Mouth::Open, Arc::from(&b"o"[..]), "image/png");
         assert_eq!(
             next().await,
-            "event: images\ndata: {\"rev\":2,\"closed\":true,\"open\":true}\n\n"
+            "event: images\ndata: {\"closed\":true,\"offset\":[0,0],\"open\":true,\"rev\":2,\"sizes\":[null,null]}\n\n"
         );
 
         outputs.set_scene(Scene {

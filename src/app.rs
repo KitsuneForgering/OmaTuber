@@ -167,6 +167,7 @@ impl App {
                 remember_password: false,
                 scene_choice: saved.scene.clone(),
                 calibration: Default::default(),
+                open_offset: saved.open_offset,
                 secret_note: None,
                 library: LibraryView {
                     draft: library.clone(),
@@ -385,6 +386,10 @@ impl App {
                 self.update_scene_target();
             }
             Action::AddToScene => self.send(Command::AddToScene),
+            Action::SetOpenOffset(offset) => {
+                self.view.open_offset = offset;
+                self.update_scene_target();
+            }
             Action::StartCalibration => {
                 self.view.calibration = view::Calibration::Silence;
                 self.send(Command::CollectLevels(CALIBRATION_PHASE));
@@ -706,13 +711,14 @@ impl App {
     /// its browser source: this app's URL, sized like the "Quieto" image.
     fn update_scene_target(&self) {
         let Ok(url) = &self.view.server else { return };
-        let [w, h] = self
-            .view
-            .slots
-            .iter()
-            .find_map(|s| s.size)
-            .unwrap_or([512, 512]);
+        // The browser source is as large as the shared canvas of both images.
+        let canvas = crate::layout::canvas(self.view.slots[0].size, self.view.slots[1].size);
+        let [w, h] = canvas.map_or([512, 512], |c| [c.width, c.height]);
         let (width, height) = crate::scene::source_size(w, h);
+        self.outputs.set_layout(
+            [self.view.slots[0].size, self.view.slots[1].size],
+            self.view.open_offset,
+        );
         self.send(Command::SceneTarget {
             scene: self.view.scene_choice.clone(),
             settings: crate::scene::BrowserSettings {
@@ -781,6 +787,7 @@ impl App {
             closed_png: self.paths[Mouth::Closed as usize].clone(),
             open_png: self.paths[Mouth::Open as usize].clone(),
             scene: self.view.scene_choice.clone(),
+            open_offset: self.view.open_offset,
         }
     }
 
