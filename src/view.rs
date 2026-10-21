@@ -393,7 +393,18 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
 
         let width = ui.available_width();
         let height = (width * 0.62).clamp(220.0, 440.0);
-        let (stage, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+        let (stage, stage_response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+        // The stage is painted; describe it for screen readers too.
+        let description = if has_images {
+            format!(
+                "Prévia do avatar: {}",
+                caption_text(shown, m, active_label(s).as_deref())
+            )
+        } else {
+            "Prévia do avatar: Comece pelas imagens".to_owned()
+        };
+        stage_response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, &description));
         let painter = ui.painter_at(stage);
         checkerboard(&painter, stage, &p);
         // Fall back to the other image so a half-configured avatar still shows.
@@ -525,6 +536,25 @@ fn accent_button(p: &Palette, text: &str) -> egui::Button<'static> {
     egui::Button::new(RichText::new(text.to_owned()).color(p.on_accent)).fill(p.accent)
 }
 
+/// The stage caption, also used as the stage's accessible description.
+fn caption_text(shown: Mouth, m: Mode, reaction: Option<&str>) -> String {
+    let state = if shown == Mouth::Open {
+        "Falando"
+    } else {
+        "Quieto"
+    };
+    let detail = match m {
+        Mode::Live if shown == Mouth::Open => "voz detectada",
+        Mode::Live => "sem voz agora",
+        Mode::Test => "prévia apenas, não altera o OBS",
+        Mode::NoSignal | Mode::NoObs => "sem leitura ao vivo",
+    };
+    match reaction {
+        Some(reaction) => format!("{reaction}  ·  {state}"),
+        None => format!("{state}  ·  {detail}"),
+    }
+}
+
 /// Badge in the stage's top-left and state caption in its bottom-left.
 fn stage_caption(
     painter: &egui::Painter,
@@ -549,21 +579,7 @@ fn stage_caption(
         13.0,
     );
 
-    let state = if shown == Mouth::Open {
-        "Falando"
-    } else {
-        "Quieto"
-    };
-    let detail = match m {
-        Mode::Live if shown == Mouth::Open => "voz detectada",
-        Mode::Live => "sem voz agora",
-        Mode::Test => "prévia apenas, não altera o OBS",
-        Mode::NoSignal | Mode::NoObs => "sem leitura ao vivo",
-    };
-    let text = match reaction {
-        Some(reaction) => format!("{reaction}  ·  {state}"),
-        None => format!("{state}  ·  {detail}"),
-    };
+    let text = caption_text(shown, m, reaction);
     let dot = if shown == Mouth::Open {
         p.accent
     } else {
@@ -646,7 +662,11 @@ fn thumbnails(ui: &mut egui::Ui, s: &mut ViewState, shown: Mouth, actions: &mut 
             .interact(rect, ui.scope_id().with(("thumb", i)), Sense::click())
             .on_hover_cursor(CursorIcon::PointingHand)
             .on_hover_text("Clique ou arraste um PNG para trocar");
-        let name = format!("Imagem {}", title.to_lowercase());
+        // Painted file name, so include it for screen readers.
+        let name = match &slot.file {
+            Some(file) => format!("Imagem {}: {file}", title.to_lowercase()),
+            None => format!("Imagem {}", title.to_lowercase()),
+        };
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
         if response.clicked() && !s.picking {
             actions.push(Action::Pick(slot_mouth));

@@ -34,7 +34,7 @@ required-features = ["sound"]
 
 [dev-dependencies]
 base64 = "0.22"
-egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
+egui_kittest = { version = "0.37", features = ["wgpu", "snapshot", "eframe"] }
 http-body-util = "0.1"
 png = "0.18"
 sha2 = "0.10"

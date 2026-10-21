@@ -429,3 +429,11 @@ Revisão do código contra o requisito "uma mudança de arquivo aplicada no edit
 2. A prévia guardava as imagens da biblioteca pelo caminho do arquivo e não as relia ao aplicar. Um arquivo editado fora do app com o mesmo nome aparecia novo no OBS e antigo na prévia. **Aplicar** agora relê todas as imagens da biblioteca para a prévia; as antigas ficam até as novas chegarem.
 
 Verificado: 134 testes no build padrão e 152 com `sound`. O segundo defeito não tem teste automático (a lógica está no binário, não na biblioteca).
+
+**2026-10-21, iteração 24: o app inteiro sob teste.** OBS fechado.
+
+Os defeitos de lógica das últimas iterações estavam em `main.rs` (mais de 900 linhas sem teste, porque testes de integração não alcançam o binário). O `App` foi movido para `src/app.rs`, na biblioteca, com uma `Config` que reúne tudo o que toca a máquina: porta do servidor (0 = qualquer porta livre, e a URL mostrada usa a obtida), preferências, biblioteca, pasta do exemplo, arquivo de tema e uso do chaveiro. `main.rs` ficou só com a linha de comando e a janela. `tests/app.rs` monta o app de verdade com `egui_kittest` em pastas temporárias, porta livre e sem chaveiro: **Usar exemplo** mostra, serve por HTTP (`/closed.png` e `/open.png` com 200 e `image/png`) e grava as preferências; um sentimento criado pela aba **Reações e objetos** só é gravado depois de **Aplicar**, e **Mostrar agora** o põe no ar; sem arquivos, o app abre com padrões, sem gravar nada e sem afirmar OBS.
+
+Os testes acharam uma falha de acessibilidade: o texto do palco ("Comece pelas imagens", legenda do estado) e o nome do arquivo nas miniaturas eram só pintados, invisíveis a leitores de tela. O palco agora se descreve ("Prévia do avatar: Falando · voz detectada"), com o mesmo texto da legenda, e as miniaturas incluem o arquivo ("Imagem quieto: quieto.png").
+
+Verificado: 137 testes no build padrão e 155 com `sound`; clippy limpo. Conferido que os testes não escrevem fora das pastas temporárias. Os arquivos em `~/.config/omatuber` e `~/.local/share/omatuber/example` são de 20/10 às 22:29 e guardam o UUID de uma fonte de áudio do OBS: o app foi aberto e conectado nesta máquina antes desta iteração, fora deste loop.
