@@ -11,7 +11,7 @@ use omatuber::prefs::{self, Prefs};
 use omatuber::server::{self, Outputs};
 use omatuber::theme;
 use omatuber::view::{self, Action, FLOOR_DB, HYSTERESIS_DB, Page, SlotView, ViewState};
-use omatuber::{cli, library, reactions};
+use omatuber::{cli, library, reactions, secret};
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -64,6 +64,8 @@ struct App {
     loaded_tx: Sender<Loaded>,
     loaded_rx: Receiver<Loaded>,
     theme_rx: Receiver<theme::Palette>,
+    secret_tx: Sender<Result<SecretDone, String>>,
+    secret_rx: Receiver<Result<SecretDone, String>>,
     lib_tx: Sender<LibLoaded>,
     lib_rx: Receiver<LibLoaded>,
     last_connection: Connection,
@@ -123,6 +125,7 @@ impl App {
 
         let (loaded_tx, loaded_rx) = channel();
         let (lib_tx, lib_rx) = channel();
+        let (secret_tx, secret_rx) = channel();
         let mut app = Self {
             runtime,
             outputs,
@@ -147,6 +150,8 @@ impl App {
                 show_connection: true,
                 copied_at: None,
                 page: Page::Avatar,
+                remember_password: false,
+                secret_note: None,
                 library: LibraryView {
                     draft: library.clone(),
                     applied: library.clone(),
@@ -157,6 +162,8 @@ impl App {
             loaded_tx,
             loaded_rx,
             theme_rx,
+            secret_tx,
+            secret_rx,
             lib_tx,
             lib_rx,
             last_connection: Connection::Idle,
@@ -165,6 +172,7 @@ impl App {
         };
         app.start_server();
         app.view.library.voice = initial_voice_view();
+        app.secret_op(SecretOp::Load);
         app.load_library_textures(ctx, &library);
         for (mouth, path) in [
             (Mouth::Closed, saved.closed_png),
@@ -341,6 +349,15 @@ impl App {
                     .send(reactions::Command::ToggleObject(id));
             }
             Action::SetVoice(on) => self.set_voice(ctx, on),
+            Action::SetRemember(true) => {
+                if self.last_connection == Connection::Connected {
+                    self.secret_op(SecretOp::Save(self.view.obs_password.clone()));
+                } else {
+                    self.view.secret_note =
+                        Some("A senha será guardada quando a conexão der certo.".to_owned());
+                }
+            }
+            Action::SetRemember(false) => self.secret_op(SecretOp::Forget),
             Action::RecordExample(_)
             | Action::RemoveLastExample(_)
             | Action::TrainSounds
@@ -600,11 +617,64 @@ impl App {
             return;
         }
         match connection {
-            Connection::Connected => self.view.show_connection = false,
+            Connection::Connected => {
+                self.view.show_connection = false;
+                // Stored only after OBS accepted it, so a typo is never kept.
+                if self.view.remember_password {
+                    self.secret_op(SecretOp::Save(self.view.obs_password.clone()));
+                }
+            }
             Connection::Failed(_) => self.view.show_connection = true,
             _ => {}
         }
         self.last_connection = connection.clone();
+    }
+
+    /// Keyring calls may block on D-Bus or an unlock prompt: run them on a
+    /// thread and report back through `secret_rx`.
+    fn secret_op(&self, op: SecretOp) {
+        let tx = self.secret_tx.clone();
+        std::thread::spawn(move || {
+            let result = secret::system_store().and_then(|store| match op {
+                SecretOp::Load => secret::load(&*store).map(SecretDone::Loaded),
+                SecretOp::Save(pw) => secret::save(&*store, &pw).map(|()| SecretDone::Saved),
+                SecretOp::Forget => secret::forget(&*store).map(|()| SecretDone::Forgotten),
+            });
+            let _ = tx.send(result);
+        });
+    }
+
+    fn receive_secret(&mut self) {
+        while let Ok(result) = self.secret_rx.try_recv() {
+            let v = &mut self.view;
+            match result {
+                Ok(SecretDone::Loaded(Some(pw))) => {
+                    v.obs_password = pw;
+                    v.remember_password = true;
+                    v.secret_note = Some("Senha lembrada deste computador.".to_owned());
+                    // Plan: try the local OBS by itself when it can.
+                    if self.last_connection == Connection::Idle {
+                        let _ = self.obs.commands.send(Command::Connect {
+                            port: v.obs_port,
+                            password: v.obs_password.clone(),
+                        });
+                    }
+                }
+                Ok(SecretDone::Loaded(None)) => {}
+                Ok(SecretDone::Saved) => {
+                    v.secret_note = Some("Senha guardada no chaveiro do sistema.".to_owned());
+                }
+                Ok(SecretDone::Forgotten) => {
+                    v.secret_note = Some("Senha apagada deste computador.".to_owned());
+                }
+                Err(e) => {
+                    v.remember_password = false;
+                    v.secret_note = Some(format!(
+                        "Não dá para lembrar a senha ({e}); ela será pedida a cada sessão."
+                    ));
+                }
+            }
+        }
     }
 
     fn current_prefs(&self) -> Prefs {
@@ -736,6 +806,18 @@ fn example_counts(keep: &[(String, usize)]) -> Vec<(String, usize)> {
         .collect()
 }
 
+enum SecretOp {
+    Load,
+    Save(String),
+    Forget,
+}
+
+enum SecretDone {
+    Loaded(Option<String>),
+    Saved,
+    Forgotten,
+}
+
 /// Results from library background threads.
 enum LibLoaded {
     Picked(FileTarget, PathBuf),
@@ -762,6 +844,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.receive_loaded(&ctx);
         self.receive_library(&ctx);
+        self.receive_secret();
         if let Some(palette) = self.theme_rx.try_iter().last() {
             theme::apply(&ctx, &palette);
             self.view.palette = palette;

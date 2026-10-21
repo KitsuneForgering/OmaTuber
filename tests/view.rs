@@ -26,6 +26,8 @@ fn state() -> ViewState {
         show_connection: true,
         copied_at: None,
         page: Default::default(),
+        remember_password: false,
+        secret_note: None,
         library: Default::default(),
     }
 }
@@ -401,4 +403,17 @@ mod teaching {
             "duplicate refused"
         );
     }
+}
+
+#[test]
+fn remember_password_checkbox_emits_its_choice() {
+    let mut h = harness(idle());
+    h.get_by_label("Lembrar senha neste computador").click();
+    h.run();
+    h.get_by_label("Lembrar senha neste computador").click();
+    h.run();
+    assert_eq!(
+        h.state().1,
+        [Action::SetRemember(true), Action::SetRemember(false)]
+    );
 }

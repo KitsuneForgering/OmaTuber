@@ -10,6 +10,7 @@ pub mod mouth;
 pub mod obs;
 pub mod prefs;
 pub mod reactions;
+pub mod secret;
 pub mod server;
 #[cfg(feature = "sound")]
 pub mod sound;

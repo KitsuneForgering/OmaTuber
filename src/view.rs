@@ -73,6 +73,12 @@ pub struct ViewState {
     /// UI time at which the URL was copied, for a short confirmation.
     pub copied_at: Option<f64>,
     pub page: Page,
+    /// Keep the OBS password in the system keyring (plan: "Lembrar neste
+    /// computador"); never in preferences.
+    pub remember_password: bool,
+    /// Why remembering is unavailable or what just happened to the stored
+    /// password; `None` when there is nothing to say.
+    pub secret_note: Option<String>,
     pub library: LibraryView,
 }
 
@@ -101,6 +107,8 @@ pub enum Action {
     ToggleObject(Uuid),
     /// Start or stop listening for trained sounds.
     SetVoice(bool),
+    /// Remember (store after the next successful connection) or forget.
+    SetRemember(bool),
     /// Record one 2.5 s example of this sound.
     RecordExample(String),
     RemoveLastExample(String),
@@ -1053,6 +1061,16 @@ fn connection_panel(
                     actions.push(Action::Connect);
                 }
             });
+            if ui
+                .checkbox(&mut s.remember_password, "Lembrar senha neste computador")
+                .on_hover_text("Guarda no chaveiro do sistema e conecta sozinho ao abrir")
+                .changed()
+            {
+                actions.push(Action::SetRemember(s.remember_password));
+            }
+            if let Some(note) = &s.secret_note {
+                ui.add(egui::Label::new(RichText::new(note.as_str()).small().color(p.muted)).wrap());
+            }
             ui.horizontal(|ui| {
                 if active {
                     if ui.button("Desconectar").clicked() {

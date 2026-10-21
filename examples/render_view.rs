@@ -40,6 +40,8 @@ fn base(palette: theme::Palette) -> ViewState {
         show_connection: false,
         copied_at: None,
         page: Default::default(),
+        remember_password: false,
+        secret_note: None,
         library: Default::default(),
     }
 }
