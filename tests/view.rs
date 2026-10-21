@@ -585,3 +585,96 @@ fn muted_microphone_is_named_as_such() {
     h.run();
     h.get_by_label("Microfone silenciado. Ative Mic no mixer de áudio do OBS");
 }
+
+mod keyboard {
+    use super::*;
+    use eframe::egui;
+    use egui_kittest::kittest::NodeT;
+
+    fn focused_label(h: &Harness<'static, (ViewState, Vec<Action>)>) -> Option<String> {
+        h.root()
+            .children_recursive()
+            .find(|n| n.accesskit_node().is_focused())
+            .and_then(|n| n.accesskit_node().label().map(|l| l.to_string()))
+    }
+
+    /// Labels reached by pressing Tab from the top, in order.
+    fn tab_order(h: &mut Harness<'static, (ViewState, Vec<Action>)>) -> Vec<String> {
+        let mut seen = Vec::new();
+        for _ in 0..60 {
+            h.key_press(egui::Key::Tab);
+            h.run();
+            match focused_label(h) {
+                Some(l) if seen.first() == Some(&l) => break,
+                Some(l) => seen.push(l),
+                None => {}
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn main_actions_are_reachable_with_tab() {
+        let mut h = harness(idle());
+        h.run();
+        let order = tab_order(&mut h);
+        for needed in [
+            "OBS não conectado. Informe a senha do WebSocket para conectar",
+            "Senha",
+            "Conectar",
+            "Usar exemplo",
+            "Imagem quieto",
+            "Imagem falando",
+            "Copiar URL",
+            "Segure para testar a boca",
+        ] {
+            assert!(
+                order.iter().any(|l| l == needed),
+                "{needed:?} not reachable; order: {order:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn enter_on_a_focused_thumbnail_picks_it() {
+        let mut h = harness(idle());
+        h.run();
+        for _ in 0..60 {
+            h.key_press(egui::Key::Tab);
+            h.run();
+            if focused_label(&h).as_deref() == Some("Imagem falando") {
+                break;
+            }
+        }
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().1, [Action::Pick(Mouth::Open)]);
+    }
+
+    #[test]
+    fn arrow_keys_move_the_sensitivity_mark() {
+        let mut h = harness(idle());
+        h.run();
+        h.get_by_label("Marca da sensibilidade").focus();
+        h.run();
+        h.key_press(egui::Key::ArrowRight);
+        h.run();
+        let before = GateParams::default().open_db;
+        assert_eq!(h.state().0.params.open_db, before + 1.0);
+        assert_eq!(h.state().1.len(), 1, "one SetParams");
+    }
+
+    /// Writes the focused thumbnail to target/tmp for a visual check when
+    /// OMATUBER_RENDER_FOCUS is set.
+    #[test]
+    fn focus_ring_render() {
+        let Some(out) = std::env::var_os("OMATUBER_RENDER_FOCUS") else {
+            return;
+        };
+        let mut h = harness(idle());
+        h.run();
+        h.get_by_label("Imagem falando").focus();
+        h.run();
+        h.render().unwrap().save(out).unwrap();
+    }
+}

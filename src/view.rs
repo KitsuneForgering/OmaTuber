@@ -364,10 +364,25 @@ fn pill(
         galley,
         p.foreground,
     );
+    focus_ring(ui, &response, rect, 15);
     if clickable {
         response.on_hover_cursor(CursorIcon::PointingHand)
     } else {
         response
+    }
+}
+
+/// Plan: "foco visível". egui draws focus for its own widgets; painted ones
+/// get the same cue here, in the accent color, a little outside the shape.
+fn focus_ring(ui: &egui::Ui, response: &egui::Response, rect: Rect, radius: u8) {
+    if response.has_focus() {
+        let color = ui.visuals().selection.stroke.color;
+        ui.painter().rect_stroke(
+            rect.expand(3.0),
+            CornerRadius::same(radius.saturating_add(3)),
+            Stroke::new(2.0, color),
+            StrokeKind::Outside,
+        );
     }
 }
 
@@ -688,6 +703,7 @@ fn thumbnails(ui: &mut egui::Ui, s: &mut ViewState, shown: Mouth, actions: &mut 
             Stroke::new(1.0, p.surface)
         };
         painter.rect_stroke(rect, CornerRadius::same(12), stroke, StrokeKind::Inside);
+        focus_ring(ui, &response, rect, 12);
 
         let thumb = Rect::from_min_size(
             rect.min + vec2(12.0, 12.0),
@@ -1154,6 +1170,7 @@ fn step_row(
             p.selection.gamma_multiply(0.5),
         );
     }
+    focus_ring(ui, &response, rect.expand(3.0), 6);
     step_icon(
         painter,
         p,
@@ -1558,12 +1575,27 @@ fn meter(ui: &mut egui::Ui, p: &Palette, level_db: f32, params: GateParams) -> O
         p.muted,
     );
 
+    focus_ring(ui, &response, rect, 11);
     let response = response.on_hover_cursor(CursorIcon::ResizeHorizontal);
-    let pos = response.interact_pointer_pos()?;
-    if !(response.dragged() || response.clicked()) {
-        return None;
-    }
-    let open_db = to_db(pos.x).clamp(MIN_OPEN_DB, 0.0).round();
+    // Keyboard: arrows move the mark 1 dB while the meter has focus.
+    let step = if response.has_focus() {
+        ui.input(|i| {
+            f32::from(u8::from(i.key_pressed(egui::Key::ArrowRight)))
+                - f32::from(u8::from(i.key_pressed(egui::Key::ArrowLeft)))
+        })
+    } else {
+        0.0
+    };
+    let open_db = if step != 0.0 {
+        params.open_db + step
+    } else {
+        let pos = response.interact_pointer_pos()?;
+        if !(response.dragged() || response.clicked()) {
+            return None;
+        }
+        to_db(pos.x)
+    };
+    let open_db = open_db.clamp(MIN_OPEN_DB, 0.0).round();
     (open_db != params.open_db).then_some(GateParams {
         open_db,
         close_db: open_db - HYSTERESIS_DB,
