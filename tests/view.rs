@@ -307,6 +307,7 @@ mod library_editor {
 
 mod teaching {
     use super::*;
+    use omatuber::library::{Ending, Library, Sentiment};
     use omatuber::library_view::{TrainingReport, VoiceView};
     use omatuber::view::Page;
 
@@ -378,6 +379,26 @@ mod teaching {
         h.get_by_label("Descartar").click();
         h.run();
         assert_eq!(h.state().1, [Action::AcceptModel, Action::DiscardModel]);
+    }
+
+    #[test]
+    fn a_sound_bound_sentiment_says_it_lasts_while_the_sound_does() {
+        let mut s = Sentiment::new("Rindo");
+        s.sound = Some("risada".to_owned());
+        s.ending = Ending::After { ms: 1500 };
+        let lib = Library {
+            sentiments: vec![s],
+            objects: vec![],
+        };
+        let mut h = harness_with(VoiceView {
+            available: true,
+            classes: vec!["risada".to_owned()],
+            ..Default::default()
+        });
+        h.state_mut().0.library.draft = lib.clone();
+        h.state_mut().0.library.applied = lib;
+        h.run();
+        h.get_by_label("Fica enquanto o som continuar e mais 1,5 s depois.");
     }
 
     #[test]

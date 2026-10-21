@@ -245,6 +245,39 @@ async fn heard_sound_shows_its_sentiment_as_voice() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Laughing longer than the sentiment's duration keeps it on screen, with
+/// the same image instance (no restart); it ends that long after the sound.
+#[tokio::test]
+async fn a_sound_still_heard_keeps_its_sentiment() {
+    let (dir, closed, open) = files("held");
+    let outputs = Outputs::default();
+    let mut lib = library(closed, open, 400);
+    lib.sentiments[0].sound = Some("risada".to_owned());
+    let handle = ready(reactions::spawn(outputs.clone(), lib, || {})).await;
+    let send = |c: Command| handle.commands.send(c).unwrap();
+    send(Command::Sound("risada".to_owned()));
+    wait_until(&outputs, |s| s.sentiment.is_some()).await;
+    let triggers = handle.status.borrow().triggers;
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        send(Command::SoundHeld("risada".to_owned()));
+    }
+    // A dip in confirmation fires it again: still the same showing.
+    send(Command::Sound("risada".to_owned()));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        outputs.scene().sentiment.is_some(),
+        "kept for 1.1 s, past 400 ms"
+    );
+    assert_eq!(handle.status.borrow().triggers, triggers, "not restarted");
+    wait_until(&outputs, |s| s.sentiment.is_none()).await;
+    // Held reports after it ended do not bring it back.
+    send(Command::SoundHeld("risada".to_owned()));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(outputs.scene().sentiment.is_none());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[tokio::test]
 async fn retriggering_the_same_sentiment_changes_the_scene() {
     let (dir, closed, open) = files("retrigger");

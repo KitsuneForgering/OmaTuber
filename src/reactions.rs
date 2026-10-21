@@ -26,8 +26,12 @@ pub enum Command {
         source: Source,
         reply: Option<oneshot::Sender<bool>>,
     },
-    /// A trained sound class was heard; shows the sentiment bound to it.
+    /// A trained sound class was confirmed; shows the sentiment bound to it,
+    /// or extends it if that sound already put it on screen.
     Sound(String),
+    /// The confirmed sound is still being heard: extends its sentiment, if
+    /// still showing from voice, and never puts it back.
+    SoundHeld(String),
     /// Back to the base avatar.
     Clear,
     ToggleObject(Uuid),
@@ -136,8 +140,15 @@ async fn run(
                         }
                     }
                     Command::Sound(class) => {
-                        if let Some(id) = lib.for_sound(&class) {
+                        if let Some(id) = lib.for_sound(&class)
+                            && !director.sustain(&lib, id, Source::Voice, now)
+                        {
                             director.trigger(&lib, id, Source::Voice, now);
+                        }
+                    }
+                    Command::SoundHeld(class) => {
+                        if let Some(id) = lib.for_sound(&class) {
+                            director.sustain(&lib, id, Source::Voice, now);
                         }
                     }
                     Command::Clear => director.clear(),

@@ -344,6 +344,17 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
                             ui.label(RichText::new("esse som não está no modelo treinado").color(p.yellow));
                         }
                     });
+                    if sentiment.sound.is_some()
+                        && let Ending::After { ms } = sentiment.ending
+                    {
+                        ui.label(
+                            RichText::new(format!(
+                                "Fica enquanto o som continuar e mais {} s depois.",
+                                format!("{:.1}", ms as f32 / 1000.0).replace('.', ",")
+                            ))
+                            .color(p.muted),
+                        );
+                    }
                 }
                 if !objects.is_empty() {
                     ui.horizontal_wrapped(|ui| {

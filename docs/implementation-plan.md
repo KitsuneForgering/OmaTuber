@@ -491,3 +491,15 @@ Revisão algorítmica do caminho ao vivo (`sound.rs`, `voice.rs`). Cada janela d
 *Latência.* O número da iteração 14 (0,77 s) era um alinhamento favorável: o teste começava o som exatamente numa fronteira de janela. Variando o início do som em 25 posições de 0 a 240 ms, o salto de 0,25 s dá média **0,86 s** e pior caso **0,98 s**; o de 50 ms, média **0,77 s** e pior caso **0,79 s**. O teste agora exige que o novo nunca seja pior. O restante do atraso vem do tamanho da janela e da confirmação, não do cálculo; encurtar a confirmação troca latência por disparos falsos e só deve ser decidido com gravações reais, que ainda não existem nesta máquina. Modelos treinados antes desta iteração continuam válidos: a mudança no pitch altera as características só por arredondamento.
 
 Verificado: 154 testes no build padrão e 173 com `sound`; clippy limpo. **Não verificado:** microfone e sons reais. A `sound-probe` ao vivo continua com o salto de 0,25 s; serve para inspecionar janelas, não para medir a latência do app.
+
+**2026-10-21, iteração 32: reação por som dura enquanto o som continua.** OBS fechado.
+
+O plano prevê o término "repetir enquanto a condição durar". Para som, isso faltava: uma risada de 5 s ligada a **Rindo** com duração de 2 s tirava a expressão no meio da risada, e uma pequena queda de confiança no meio do som fazia a reação disparar de novo, reiniciando a animação. Agora:
+
+- O `Listener` continua informando a classe confirmada a cada 0,25 s enquanto ela segue confirmada janela após janela (`Heard::Held`), além do disparo inicial (`Heard::Fired`). Com o salto de 50 ms da iteração 31, isso não custa análise extra.
+- `Director::sustain`: se o sentimento está no ar **pela voz**, o tempo volta a contar a partir de agora, sem reiniciar a imagem. A duração configurada passa a valer a partir da última vez que o som foi ouvido. Um novo disparo do mesmo som, depois de uma queda de confiança, também só estende. Um sentimento posto por atalho nunca é estendido pela voz, e um que já terminou não volta com relatos tardios.
+- No editor, um sentimento ligado a um som diz "Fica enquanto o som continuar e mais 1,5 s depois."
+
+Não foi criada uma opção nova: estender enquanto o som continua é o que se espera de uma reação a som, e a duração existente vira o tempo de saída.
+
+Verificado: 1 teste do `Director`, 1 de integração em tempo real (som segurado mantém a cena por 1,1 s com duração de 0,4 s, sem novo acionamento, e termina depois), o teste do `Listener` passa a exigir 4 a 7 relatos em 2 s de som, e 1 de interface; 157 testes no build padrão e 176 com `sound`; clippy limpo. **Não verificado:** risada real; a frequência com que a confiança cai no meio de um som real decide se a duração padrão de 3 s basta para cobrir as quedas.

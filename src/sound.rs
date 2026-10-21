@@ -586,6 +586,14 @@ impl Detector {
         }
         (self.run == self.confirm).then_some(self.current).flatten()
     }
+
+    /// The class that fired and is still confirmed window after window, with
+    /// how many windows since it fired (1 = the window after firing).
+    pub fn holding(&self) -> Option<(usize, usize)> {
+        self.current
+            .filter(|_| self.run > self.confirm)
+            .map(|c| (c, self.run - self.confirm))
+    }
 }
 
 #[cfg(test)]
@@ -758,8 +766,11 @@ mod tests {
         let speech = [0.9, 0.1];
         assert_eq!(d.update(Some(&laugh)), None);
         assert_eq!(d.update(Some(&laugh)), Some(1));
+        assert_eq!(d.holding(), None, "just fired");
         assert_eq!(d.update(Some(&laugh)), None);
+        assert_eq!(d.holding(), Some((1, 1)));
         assert_eq!(d.update(Some(&speech)), None);
+        assert_eq!(d.holding(), None);
         assert_eq!(d.update(None), None);
         assert_eq!(d.update(Some(&laugh)), None);
         assert_eq!(d.update(Some(&[0.4, 0.6])), None);

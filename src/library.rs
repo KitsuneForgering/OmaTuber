@@ -234,6 +234,26 @@ impl Director {
         true
     }
 
+    /// Keeps `id` on screen if it is showing from `source`: its time counts
+    /// again from `now`, without restarting its image. Returns whether it was
+    /// showing. A sound heard again extends the reaction it started.
+    pub fn sustain(&mut self, lib: &Library, id: Uuid, source: Source, now: Duration) -> bool {
+        self.expire(now);
+        let Some(a) = self
+            .active
+            .as_mut()
+            .filter(|a| a.id == id && a.source == source)
+        else {
+            return false;
+        };
+        if let (Some(until), Some(Ending::After { ms })) =
+            (a.until.as_mut(), lib.sentiment(id).map(|s| s.ending))
+        {
+            *until = (*until).max(now + Duration::from_millis(ms.into()));
+        }
+        true
+    }
+
     /// Back to the base avatar.
     pub fn clear(&mut self) {
         self.active = None;
@@ -425,6 +445,34 @@ mod tests {
         assert_eq!(
             (c.sentiment, c.source),
             (Some((happy, false)), Some(Source::Shortcut))
+        );
+    }
+
+    #[test]
+    fn sustain_extends_only_the_same_sentiment_from_the_same_source() {
+        let (lib, happy, angry, _) = lib();
+        let mut d = Director::default();
+        d.trigger(&lib, happy, Source::Voice, ms(0));
+        assert!(d.sustain(&lib, happy, Source::Voice, ms(900)));
+        assert_eq!(d.triggers(), 1, "the image does not restart");
+        assert_eq!(d.next_change(ms(900)), Some(ms(1000)));
+        assert!(!d.sustain(&lib, happy, Source::Shortcut, ms(950)));
+        assert!(!d.sustain(&lib, angry, Source::Voice, ms(950)));
+        assert_eq!(
+            d.compose(&lib, Mouth::Closed, ms(1800)).sentiment,
+            Some((happy, false)),
+            "still showing past its first 1 s"
+        );
+        assert!(
+            !d.sustain(&lib, happy, Source::Voice, ms(1900)),
+            "once ended, hearing it again does not bring it back"
+        );
+        assert_eq!(d.compose(&lib, Mouth::Closed, ms(1900)).sentiment, None);
+
+        d.trigger(&lib, angry, Source::Shortcut, ms(2000));
+        assert!(
+            !d.sustain(&lib, angry, Source::Voice, ms(2100)),
+            "not from voice"
         );
     }
 

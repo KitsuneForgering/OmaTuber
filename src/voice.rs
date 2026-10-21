@@ -25,6 +25,17 @@ pub const HOP_FRAMES: usize = 5;
 /// original 2 windows 0.25 s apart covered.
 pub const MIN_P: f32 = 0.7;
 pub const CONFIRM_SPAN: Duration = Duration::from_millis(250);
+/// While a fired sound stays confirmed, it is reported this often, so its
+/// reaction lasts as long as the sound (laughing for 5 s keeps "Rindo").
+pub const HELD_EVERY: Duration = Duration::from_millis(250);
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Heard {
+    /// A class was just confirmed.
+    Fired(String),
+    /// The class that fired is still being heard.
+    Held(String),
+}
 /// If analysis falls behind by more than this, the oldest audio is dropped so
 /// a reaction never fires long after the sound (real-time over completeness).
 pub const MAX_BACKLOG: Duration = Duration::from_millis(500);
@@ -34,6 +45,8 @@ pub struct Listener {
     model: Model,
     stream: Stream,
     detector: Detector,
+    /// Windows between `Heard::Held` reports.
+    held_every: usize,
     pub stats: Stats,
 }
 
@@ -58,10 +71,12 @@ impl Listener {
         let stream = Stream::new(hop_frames, SILENCE_DB);
         let confirm = backlog_samples(CONFIRM_SPAN) / stream.hop_samples() + 1;
         let detector = Detector::new(&model.classes, &BACKGROUND, MIN_P, confirm);
+        let held_every = (backlog_samples(HELD_EVERY) / stream.hop_samples()).max(1);
         Self {
             model,
             stream,
             detector,
+            held_every,
             stats: Stats::default(),
         }
     }
@@ -70,8 +85,8 @@ impl Listener {
         &self.model.classes
     }
 
-    /// Adds captured samples; returns the classes that fired, in order.
-    pub fn push(&mut self, samples: &[f32]) -> Vec<String> {
+    /// Adds captured samples; returns what was heard, in order.
+    pub fn push(&mut self, samples: &[f32]) -> Vec<Heard> {
         let max = WINDOW_SAMPLES + backlog_samples(MAX_BACKLOG);
         let samples = if self.stream.pending() + samples.len() > max {
             // Too far behind: keep only the newest audio, as a new stream.
@@ -96,7 +111,11 @@ impl Listener {
                 (self.model.classes[c].clone(), p[c])
             });
             if let Some(c) = self.detector.update(post.as_deref()) {
-                fired.push(self.model.classes[c].clone());
+                fired.push(Heard::Fired(self.model.classes[c].clone()));
+            } else if let Some((c, n)) = self.detector.holding()
+                && n % self.held_every == 0
+            {
+                fired.push(Heard::Held(self.model.classes[c].clone()));
             }
             self.stats.last_window = started.elapsed();
             self.stats.worst_window = self.stats.worst_window.max(self.stats.last_window);
@@ -190,8 +209,11 @@ fn listen(
                 return Err("a captura do PipeWire parou".to_owned());
             }
         };
-        for class in listener.push(&chunk) {
-            let _ = reactions.send(Command::Sound(class));
+        for heard in listener.push(&chunk) {
+            let _ = reactions.send(match heard {
+                Heard::Fired(class) => Command::Sound(class),
+                Heard::Held(class) => Command::SoundHeld(class),
+            });
         }
         // The UI only needs a few updates per second.
         if last_report.elapsed() >= Duration::from_millis(250) {
@@ -249,8 +271,22 @@ mod tests {
         assert!(fired.is_empty(), "background class never fires");
         // Fed in 10 ms chunks, as PipeWire would.
         let sound = tone(SAMPLE_RATE * 2, 220.0);
-        let fired: Vec<String> = sound.chunks(160).flat_map(|c| l.push(c)).collect();
-        assert_eq!(fired, ["risada"], "fires once per continuous sound");
+        let heard: Vec<Heard> = sound.chunks(160).flat_map(|c| l.push(c)).collect();
+        let fired: Vec<&Heard> = heard
+            .iter()
+            .filter(|h| matches!(h, Heard::Fired(_)))
+            .collect();
+        assert_eq!(
+            fired,
+            [&Heard::Fired("risada".into())],
+            "fires once per continuous sound"
+        );
+        // Then keeps reporting it, every 0.25 s, while it lasts (2 s here).
+        let held = heard
+            .iter()
+            .filter(|h| **h == Heard::Held("risada".into()))
+            .count();
+        assert!((4..=7).contains(&held), "{held} reports");
         assert_eq!(
             l.stats.heard.as_ref().map(|(c, _)| c.as_str()),
             Some("risada")
@@ -273,7 +309,10 @@ mod tests {
                 let at = sound
                     .chunks(160)
                     .enumerate()
-                    .find_map(|(i, c)| (!l.push(c).is_empty()).then_some((i + 1) * 160))
+                    .find_map(|(i, c)| {
+                        let fired = l.push(c).iter().any(|h| matches!(h, Heard::Fired(_)));
+                        fired.then_some((i + 1) * 160)
+                    })
                     .expect("fires");
                 at as f64 / SAMPLE_RATE as f64
             })
