@@ -113,6 +113,11 @@ impl Default for Outputs {
 }
 
 impl Outputs {
+    /// Follows mouth changes, e.g. to measure silence.
+    pub fn watch_mouth(&self) -> watch::Receiver<Mouth> {
+        self.mouth.subscribe()
+    }
+
     pub fn blinking(&self) -> bool {
         *self.blink.borrow()
     }

@@ -131,6 +131,7 @@ pub fn source_label(source: Source) -> &'static str {
         Source::Shortcut => "Atalho",
         Source::Voice => "Acionado por voz",
         Source::Test => "Teste",
+        Source::Silence => "Por silêncio",
     }
 }
 
@@ -306,6 +307,21 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
                         .on_hover_text(
                             "Um sentimento de prioridade maior não é interrompido por um menor",
                         );
+                });
+                ui.horizontal(|ui| {
+                    let mut on = sentiment.after_silence_secs.is_some();
+                    if ui
+                        .checkbox(&mut on, "Aparece após silêncio")
+                        .on_hover_text("Quando você fica sem falar, por exemplo para \"Dormindo\"; sai assim que você volta a falar")
+                        .changed()
+                    {
+                        sentiment.after_silence_secs = on.then_some(60);
+                    }
+                    if let Some(secs) = &mut sentiment.after_silence_secs {
+                        let label = ui.label("depois de (s)");
+                        ui.add(egui::DragValue::new(secs).range(1..=3600))
+                            .labelled_by(label.id);
+                    }
                 });
                 if lib.voice.available {
                     ui.horizontal(|ui| {

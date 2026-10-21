@@ -302,3 +302,61 @@ async fn replacing_a_file_reaches_the_page_without_retriggering() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn silence_shows_its_sentiment_and_voice_ends_it() {
+    use omatuber::library::Source;
+    use omatuber::mouth::Mouth;
+    let (dir, closed, open) = files("silence");
+    let outputs = Outputs::default();
+    let mut lib = library(closed.clone(), open, 60_000);
+    let mut sleepy = Sentiment::new("Dormindo");
+    sleepy.quiet = Some(closed);
+    sleepy.ending = Ending::UntilNext;
+    sleepy.after_silence_secs = Some(1);
+    let sleepy_id = sleepy.id;
+    lib.sentiments.push(sleepy);
+    let handle = ready(reactions::spawn(outputs.clone(), lib, || {})).await;
+    let active = |h: &reactions::Handle| h.status.borrow().active;
+
+    // Quiet for a second: asleep.
+    let mut status = handle.status.clone();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        status.wait_for(|s| s.active.is_some()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(active(&handle), Some((sleepy_id, Source::Silence)));
+
+    // Speaking wakes it up.
+    outputs.set_mouth(Mouth::Open);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        status.wait_for(|s| s.active.is_none()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    // A new silent stretch falls asleep again.
+    outputs.set_mouth(Mouth::Closed);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        status.wait_for(|s| s.active.is_some()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(active(&handle), Some((sleepy_id, Source::Silence)));
+
+    // A shortcut takes over, and silence does not push it away.
+    assert_eq!(
+        post(&outputs, "/react/Animado", "127.0.0.1", true).await,
+        StatusCode::NO_CONTENT
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(active(&handle).map(|(_, s)| s), Some(Source::Shortcut));
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -85,8 +85,27 @@ async fn run(
     apply(library, &mut lib, &mut assets, &mut errors, &outputs).await;
     // Bumped per applied library, so replaced files reach the page.
     let mut generation: u64 = 1;
+    // Silence: time since the mouth last opened, and which silence sentiment
+    // already fired in this silent stretch (so one with a duration does not
+    // fire again the moment it ends).
+    let mut mouth = outputs.watch_mouth();
+    let mut last_voice = start.elapsed();
+    let mut silence_fired: Option<Uuid> = None;
     loop {
         let now = start.elapsed();
+        let silent_for = now.saturating_sub(last_voice);
+        if let Some(id) = lib.for_silence(silent_for)
+            && silence_fired != Some(id)
+        {
+            director.compose(&lib, Mouth::Closed, now); // expire first
+            let free = match director.active() {
+                None => true,
+                Some((_, source)) => source == Source::Silence,
+            };
+            if free && director.trigger(&lib, id, Source::Silence, now) {
+                silence_fired = Some(id);
+            }
+        }
         publish(
             &mut director,
             &lib,
@@ -98,7 +117,12 @@ async fn run(
             &status,
             &notify,
         );
-        let deadline = director.next_change(now).map(|d| Instant::now() + d);
+        let next_silence = lib.next_silence(silent_for).map(|t| t - silent_for);
+        let wait = match (director.next_change(now), next_silence) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let deadline = wait.map(|d| Instant::now() + d);
         tokio::select! {
             cmd = rx.recv() => {
                 let Some(cmd) = cmd else { return };
@@ -121,6 +145,16 @@ async fn run(
                     Command::Apply(new) => {
                         apply(new, &mut lib, &mut assets, &mut errors, &outputs).await;
                         generation += 1;
+                    }
+                }
+            }
+            Ok(()) = mouth.changed() => {
+                if *mouth.borrow_and_update() == Mouth::Open {
+                    last_voice = start.elapsed();
+                    silence_fired = None;
+                    // Speaking ends a silence sentiment, never one from a shortcut.
+                    if director.active().is_some_and(|(_, source)| source == Source::Silence) {
+                        director.clear();
                     }
                 }
             }

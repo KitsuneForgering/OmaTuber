@@ -42,6 +42,10 @@ pub struct Sentiment {
     /// an inferred emotion). Missing in libraries saved before this existed.
     #[serde(default)]
     pub sound: Option<String>,
+    /// Shown after this many seconds without voice (e.g. "Dormindo"), until
+    /// the person speaks again.
+    #[serde(default)]
+    pub after_silence_secs: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +81,7 @@ impl Sentiment {
             objects: Vec::new(),
             enabled: true,
             sound: None,
+            after_silence_secs: None,
         }
     }
 }
@@ -113,6 +118,29 @@ impl Library {
             .map(|s| s.id)
     }
 
+    /// Sentiment for a silence lasting `silent_for`: among enabled ones whose
+    /// threshold was reached, the longest threshold wins (so "Cansado" at
+    /// 30 s gives way to "Dormindo" at 120 s), then higher priority.
+    pub fn for_silence(&self, silent_for: Duration) -> Option<Uuid> {
+        self.sentiments
+            .iter()
+            .filter(|s| s.enabled)
+            .filter_map(|s| Some((s, Duration::from_secs(s.after_silence_secs?.into()))))
+            .filter(|(_, after)| silent_for >= *after)
+            .max_by_key(|(s, after)| (*after, s.priority))
+            .map(|(s, _)| s.id)
+    }
+
+    /// The next silence threshold after `silent_for`, to know when to look again.
+    pub fn next_silence(&self, silent_for: Duration) -> Option<Duration> {
+        self.sentiments
+            .iter()
+            .filter(|s| s.enabled)
+            .filter_map(|s| Some(Duration::from_secs(s.after_silence_secs?.into())))
+            .filter(|after| *after > silent_for)
+            .min()
+    }
+
     pub fn object(&self, id: Uuid) -> Option<&Object> {
         self.objects.iter().find(|o| o.id == id && o.enabled)
     }
@@ -145,6 +173,8 @@ pub enum Source {
     Shortcut,
     Voice,
     Test,
+    /// No voice for a while (`Sentiment::after_silence_secs`).
+    Silence,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -487,6 +517,22 @@ mod tests {
         let json = r#"{"sentiments":[{"id":"00000000-0000-0000-0000-000000000001","name":"A","quiet":null,"talking":null,"priority":1,"ending":"UntilNext","objects":[],"enabled":true}],"objects":[]}"#;
         let lib: Library = serde_json::from_str(json).unwrap();
         assert_eq!(lib.sentiments[0].sound, None);
+    }
+
+    #[test]
+    fn longest_reached_silence_threshold_wins() {
+        let (mut lib, happy, angry, _) = lib();
+        lib.sentiments[0].after_silence_secs = Some(30); // "Cansado"
+        lib.sentiments[1].after_silence_secs = Some(120); // "Dormindo"
+        let s = Duration::from_secs;
+        assert_eq!(lib.for_silence(s(10)), None);
+        assert_eq!(lib.next_silence(s(10)), Some(s(30)));
+        assert_eq!(lib.for_silence(s(30)), Some(happy));
+        assert_eq!(lib.next_silence(s(30)), Some(s(120)));
+        assert_eq!(lib.for_silence(s(500)), Some(angry));
+        assert_eq!(lib.next_silence(s(500)), None);
+        lib.sentiments[1].enabled = false;
+        assert_eq!(lib.for_silence(s(500)), Some(happy));
     }
 
     #[test]

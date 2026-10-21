@@ -721,3 +721,28 @@ fn blink_row_picks_and_removes() {
         ]
     );
 }
+
+#[test]
+fn silence_trigger_can_be_set_per_sentiment() {
+    use omatuber::library::{Library, Sentiment};
+    use omatuber::view::Page;
+    let mut h = harness(idle());
+    {
+        let s = &mut h.state_mut().0;
+        s.page = Page::Library;
+        let lib = Library {
+            sentiments: vec![Sentiment::new("Dormindo")],
+            objects: vec![],
+        };
+        s.library.draft = lib.clone();
+        s.library.applied = lib;
+    }
+    h.run();
+    h.get_by_label("Aparece após silêncio").click();
+    h.run();
+    assert_eq!(
+        h.state().0.library.draft.sentiments[0].after_silence_secs,
+        Some(60)
+    );
+    assert!(h.state().0.library.dirty(), "takes effect on Aplicar");
+}
