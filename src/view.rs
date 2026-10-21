@@ -580,7 +580,7 @@ fn checkerboard(painter: &egui::Painter, rect: Rect, p: &Palette) {
     for y in 0..rows {
         for x in (y % 2..cols).step_by(2) {
             let min = rect.min + vec2(x as f32 * SQ, y as f32 * SQ);
-            painter.rect_filled(Rect::from_min_size(min, Vec2::splat(SQ)), 0.0, p.surface);
+            painter.rect_filled(Rect::from_min_size(min, Vec2::splat(SQ)), 0.0, p.checker);
         }
     }
 }

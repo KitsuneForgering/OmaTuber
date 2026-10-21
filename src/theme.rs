@@ -24,7 +24,13 @@ pub struct Palette {
     pub light: bool,
     /// Label color for text on an `accent` fill.
     pub on_accent: Color32,
+    /// Second square of the transparency checkerboard, over `sunken`.
+    pub checker: Color32,
 }
+
+/// Enough for the checkerboard to read as a pattern without competing with
+/// the avatar drawn over it.
+pub const MIN_CHECKER_CONTRAST: f32 = 1.25;
 
 /// WCAG 2 AA contrast for normal-size text.
 pub const MIN_TEXT_CONTRAST: f32 = 4.5;
@@ -44,6 +50,7 @@ impl Default for Palette {
             green: Color32::from_rgb(0x5f, 0xd3, 0x8d),
             light: false,
             on_accent: Color32::from_rgb(0x14, 0x15, 0x18),
+            checker: Color32::from_rgb(0x1f, 0x21, 0x25),
         }
     }
 }
@@ -69,6 +76,9 @@ impl Palette {
             }
         }
         self.muted = toward_contrast(self.muted, bg, fg, MIN_TEXT_CONTRAST);
+        // Themes often make dark_background and lighter_background almost equal
+        // (catppuccin-latte: 1.03:1), which hides the checkerboard.
+        self.checker = toward_contrast(self.sunken, self.sunken, fg, MIN_CHECKER_CONTRAST);
         // Status colors darken or lighten instead: mixing with black or white
         // keeps the hue, mixing with a tinted foreground may not.
         let extreme = if self.light {
@@ -356,6 +366,10 @@ mod tests {
             assert!(hue_in(p.red, (330.0, 25.0)), "{name:?} red hue");
             assert!(hue_in(p.yellow, (25.0, 70.0)), "{name:?} yellow hue");
             assert!(hue_in(p.green, (80.0, 175.0)), "{name:?} green hue");
+            assert!(
+                contrast(p.checker, p.sunken) >= MIN_CHECKER_CONTRAST,
+                "{name:?} checker"
+            );
             checked += 1;
         }
         assert!(checked > 0);
