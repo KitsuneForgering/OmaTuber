@@ -2,11 +2,14 @@
 //! gets its own temporary directory, a free server port and no keyring, so
 //! nothing on the machine is read or written.
 
+mod common;
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use eframe::egui;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use omatuber::app::{App, Config};
@@ -165,4 +168,94 @@ fn starts_with_defaults_when_files_are_missing_and_never_claims_obs() {
         !fx.dir.join("prefs.json").exists(),
         "nothing saved before a change"
     );
+}
+
+/// The plan's first-use path, through the window, against a fake OBS:
+/// sample avatar, password, microphone, voice moving the mouth, and the
+/// avatar added to the scene on air, once.
+#[test]
+fn first_use_from_example_to_scene() {
+    let fx = Fixture::new("first-use");
+    let obs_rt = tokio::runtime::Runtime::new().unwrap();
+    let (obs_port, obs, world) = obs_rt.block_on(common::fake_obs("senha-do-obs"));
+    std::fs::write(
+        fx.dir.join("prefs.json"),
+        format!("{{\"obs_port\": {obs_port}}}"),
+    )
+    .unwrap();
+
+    let mut h = fx.harness();
+    h.run();
+    let url = server_url(&h);
+
+    // 1. Avatar
+    h.get_by_label("Usar exemplo").click();
+    step_until(&mut h, "example", |h| {
+        h.query_by_label("Imagem quieto: quieto.png").is_some()
+    });
+
+    // 2. OBS
+    let password = h.get_by_label("Senha");
+    password.focus();
+    password.type_text("senha-do-obs");
+    h.run();
+    h.get_by_label("Conectar").click();
+    step_until(&mut h, "connected", |h| {
+        h.query_by_label("OBS conectado. Recebendo dados do OBS")
+            .is_some()
+    });
+
+    // 3. Microphone: the combo shares the "Sua voz" heading as its label.
+    let combo = h
+        .get_all_by_label("Sua voz")
+        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::ComboBox)
+        .expect("microphone picker");
+    combo.click();
+    h.run();
+    h.get_by_label("Mic/Aux").click();
+    h.run();
+
+    // The voice: meters for the microphone, about -10 dBFS.
+    let start = Instant::now();
+    while h
+        .query_by_label("Prévia do avatar: Falando  ·  voz detectada")
+        .is_none()
+    {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "mouth never opened"
+        );
+        obs.send(common::Control::Meter(0.3)).unwrap();
+        h.step();
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    h.get_by_label("Microfone ativo. Mic/Aux · som recebido agora");
+
+    // 4. Scene
+    h.get_by_label("Adicionar à cena Principal").click();
+    step_until(&mut h, "visible", |h| {
+        h.query_by_label("Visível na cena Principal. Avatar adicionado ao OBS")
+            .is_some()
+    });
+    let w = world.lock().unwrap();
+    let ours: Vec<_> = w
+        .inputs
+        .iter()
+        .filter(|i| i.kind == "browser_source")
+        .collect();
+    assert_eq!(ours.len(), 1, "one browser source");
+    assert_eq!(
+        ours[0].settings["url"],
+        url.as_str(),
+        "pointing at this app"
+    );
+    assert_eq!(
+        (
+            ours[0].settings["width"].as_u64(),
+            ours[0].settings["height"].as_u64()
+        ),
+        (Some(512), Some(512))
+    );
+    drop(w);
+    drop(obs_rt);
 }

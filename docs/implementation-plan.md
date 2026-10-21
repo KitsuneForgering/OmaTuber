@@ -437,3 +437,9 @@ Os defeitos de lógica das últimas iterações estavam em `main.rs` (mais de 90
 Os testes acharam uma falha de acessibilidade: o texto do palco ("Comece pelas imagens", legenda do estado) e o nome do arquivo nas miniaturas eram só pintados, invisíveis a leitores de tela. O palco agora se descreve ("Prévia do avatar: Falando · voz detectada"), com o mesmo texto da legenda, e as miniaturas incluem o arquivo ("Imagem quieto: quieto.png").
 
 Verificado: 137 testes no build padrão e 155 com `sound`; clippy limpo. Conferido que os testes não escrevem fora das pastas temporárias. Os arquivos em `~/.config/omatuber` e `~/.local/share/omatuber/example` são de 20/10 às 22:29 e guardam o UUID de uma fonte de áudio do OBS: o app foi aberto e conectado nesta máquina antes desta iteração, fora deste loop.
+
+**2026-10-21, iteração 25: primeiro uso inteiro testado pela janela.** OBS fechado.
+
+O servidor obs-websocket falso foi para `tests/common/`, compartilhado pelos testes. `tests/app.rs` ganhou o percurso das quatro etapas de **Primeiro uso**, pela interface do app real e contra o OBS falso: **Usar exemplo**; digitar a senha e **Conectar**, até **OBS conectado**; escolher **Mic/Aux** na lista de microfones; com níveis de voz chegando, **Microfone ativo** e o palco descrito como "Falando · voz detectada"; **Adicionar à cena Principal** até **Visível na cena Principal**, com exatamente uma fonte de navegador criada, apontando para a URL deste app, em 512×512. Estável em 10 execuções seguidas. Total: 138 testes no build padrão e 156 com `sound`.
+
+Isto confirma que as peças se encaixam na ordem do plano. Não substitui o critério do plano (iniciantes executando as etapas sem orientação, e a gravação no OBS real).
