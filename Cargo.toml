@@ -31,3 +31,12 @@ egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 http-body-util = "0.1"
 tokio = { version = "1", features = ["test-util", "macros", "rt", "io-util", "net"] }
 tower = { version = "0.5", features = ["util"] }
+
+# Debug builds run the audio analysis and the egui/wgpu renderer every frame;
+# unoptimized they cost ~10x CPU (examples/bench_sound.rs). Optimizing
+# dependencies is a one-time compile cost; our own crate stays quick to rebuild.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
