@@ -3,19 +3,21 @@
 //! Serves a transparent page, the two avatar PNGs on fixed routes, and an SSE
 //! stream with the mouth state. It listens on loopback only.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Path as AxumPath, State};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use futures_util::Stream;
 use futures_util::stream;
+use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::time::{Instant, Interval, interval_at};
@@ -41,11 +43,40 @@ pub struct Images {
     pub rev: u64,
 }
 
+/// Sentiment and objects drawn instead of or over the base avatar, already
+/// resolved by `library::Director`. Asset keys are opaque names registered
+/// with `Outputs::set_assets`; the page builds `/asset/<key>` URLs from them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Scene {
+    /// Bumped on every change so the page reloads replaced files.
+    pub rev: u64,
+    pub sentiment: Option<SceneSentiment>,
+    pub objects: Vec<SceneObject>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SceneSentiment {
+    pub quiet: Option<String>,
+    pub talking: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SceneObject {
+    pub asset: String,
+    /// Center and width as fractions of the drawn avatar.
+    pub x: f32,
+    pub y: f32,
+    pub scale: f32,
+}
+
 /// Handle the app uses to publish state to connected pages.
 #[derive(Clone)]
 pub struct Outputs {
     mouth: watch::Sender<Mouth>,
     images: watch::Sender<Images>,
+    scene: watch::Sender<Scene>,
+    /// Validated files by key; the only files `/asset/{key}` can return.
+    assets: Arc<RwLock<HashMap<String, Served>>>,
 }
 
 impl Default for Outputs {
@@ -53,6 +84,8 @@ impl Default for Outputs {
         Self {
             mouth: watch::Sender::new(Mouth::Closed),
             images: watch::Sender::new(Images::default()),
+            scene: watch::Sender::new(Scene::default()),
+            assets: Arc::default(),
         }
     }
 }
@@ -60,6 +93,24 @@ impl Default for Outputs {
 impl Outputs {
     pub fn mouth(&self) -> Mouth {
         *self.mouth.borrow()
+    }
+
+    /// Replaces the set of servable assets, e.g. after the library changed.
+    pub fn set_assets(&self, assets: HashMap<String, Served>) {
+        *self.assets.write().unwrap_or_else(|e| e.into_inner()) = assets;
+    }
+
+    /// Publishes a new scene; pages are only woken when it differs.
+    pub fn set_scene(&self, mut scene: Scene) {
+        self.scene.send_if_modified(|current| {
+            scene.rev = current.rev;
+            if *current == scene {
+                return false;
+            }
+            scene.rev += 1;
+            *current = scene;
+            true
+        });
     }
 
     /// Publishes the mouth state; pages are only woken when it changes.
@@ -96,6 +147,7 @@ pub fn router(outputs: Outputs) -> Router {
         .route("/closed.png", get(|s| image(s, Mouth::Closed)))
         .route("/open.png", get(|s| image(s, Mouth::Open)))
         .route("/events", get(events))
+        .route("/asset/{key}", get(asset))
         .with_state(outputs)
 }
 
@@ -118,6 +170,26 @@ async fn image(State(outputs): State<Outputs>, mouth: Mouth) -> Response {
     }
 }
 
+async fn asset(State(outputs): State<Outputs>, AxumPath(key): AxumPath<String>) -> Response {
+    let found = outputs
+        .assets
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+        .cloned();
+    match found {
+        Some((bytes, mime)) => (
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            axum::body::Bytes::from_owner(bytes),
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 async fn events(
     State(outputs): State<Outputs>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
@@ -127,6 +199,7 @@ async fn events(
 struct Subscriber {
     mouth: watch::Receiver<Mouth>,
     images: watch::Receiver<Images>,
+    scene: watch::Receiver<Scene>,
     heartbeat: Interval,
     /// Initial snapshot, popped from the end before waiting for changes.
     pending: Vec<Event>,
@@ -135,15 +208,18 @@ struct Subscriber {
 fn event_stream(outputs: Outputs) -> impl Stream<Item = Result<Event, Infallible>> {
     let mut mouth = outputs.mouth.subscribe();
     let mut images = outputs.images.subscribe();
-    // Images go out first (last in the vec) so the page has something to
-    // show when the state arrives.
+    let mut scene = outputs.scene.subscribe();
+    // Popped from the end: images, then scene, then the mouth state, so the
+    // page has something to show when the state arrives.
     let pending = vec![
         mouth_event(*mouth.borrow_and_update()),
+        scene_event(&scene.borrow_and_update()),
         images_event(&images.borrow_and_update()),
     ];
     let sub = Subscriber {
         mouth,
         images,
+        scene,
         heartbeat: interval_at(Instant::now() + HEARTBEAT, HEARTBEAT),
         pending,
     };
@@ -153,6 +229,7 @@ fn event_stream(outputs: Outputs) -> impl Stream<Item = Result<Event, Infallible
         }
         let event = tokio::select! {
             Ok(()) = sub.images.changed() => images_event(&sub.images.borrow_and_update()),
+            Ok(()) = sub.scene.changed() => scene_event(&sub.scene.borrow_and_update()),
             Ok(()) = sub.mouth.changed() => mouth_event(*sub.mouth.borrow_and_update()),
             _ = sub.heartbeat.tick() => mouth_event(*sub.mouth.borrow()),
         };
@@ -166,6 +243,11 @@ fn mouth_event(mouth: Mouth) -> Event {
         Mouth::Open => "open",
     };
     Event::default().event("mouth").data(data)
+}
+
+fn scene_event(scene: &Scene) -> Event {
+    let data = serde_json::to_string(scene).expect("scene serializes");
+    Event::default().event("scene").data(data)
 }
 
 fn images_event(images: &Images) -> Event {
@@ -266,6 +348,10 @@ mod tests {
             next().await,
             "event: images\ndata: {\"rev\":1,\"closed\":true,\"open\":false}\n\n"
         );
+        assert_eq!(
+            next().await,
+            "event: scene\ndata: {\"rev\":0,\"sentiment\":null,\"objects\":[]}\n\n"
+        );
         assert_eq!(next().await, "event: mouth\ndata: closed\n\n");
 
         outputs.set_mouth(Mouth::Open);
@@ -277,8 +363,71 @@ mod tests {
             "event: images\ndata: {\"rev\":2,\"closed\":true,\"open\":true}\n\n"
         );
 
+        outputs.set_scene(Scene {
+            sentiment: Some(SceneSentiment {
+                quiet: Some("s-q".to_owned()),
+                talking: None,
+            }),
+            ..Scene::default()
+        });
+        assert_eq!(
+            next().await,
+            "event: scene\ndata: {\"rev\":1,\"sentiment\":{\"quiet\":\"s-q\",\"talking\":null},\"objects\":[]}\n\n"
+        );
+
         // Nothing changes: with time paused, the next event is the heartbeat.
         assert_eq!(next().await, "event: mouth\ndata: open\n\n");
+    }
+
+    #[tokio::test]
+    async fn assets_are_served_by_registered_key_only() {
+        let outputs = Outputs::default();
+        let mut assets = HashMap::new();
+        assets.insert("abc-q".to_owned(), (Arc::from(&b"GIF89a"[..]), "image/gif"));
+        outputs.set_assets(assets);
+        let resp = get(&outputs, "/asset/abc-q?rev=3").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[header::CONTENT_TYPE], "image/gif");
+        assert_eq!(body(resp).await, b"GIF89a");
+        for uri in [
+            "/asset/nope",
+            "/asset/..%2Fclosed.png",
+            "/asset/",
+            "/asset/abc-q/x",
+        ] {
+            assert_eq!(
+                get(&outputs, uri).await.status(),
+                StatusCode::NOT_FOUND,
+                "{uri}"
+            );
+        }
+        outputs.set_assets(HashMap::new());
+        assert_eq!(
+            get(&outputs, "/asset/abc-q").await.status(),
+            StatusCode::NOT_FOUND,
+            "removed"
+        );
+    }
+
+    #[test]
+    fn scene_rev_bumps_only_on_change() {
+        let outputs = Outputs::default();
+        let mut rx = outputs.scene.subscribe();
+        outputs.set_scene(Scene::default());
+        assert!(!rx.has_changed().unwrap(), "same scene");
+        let with_object = Scene {
+            objects: vec![SceneObject {
+                asset: "o".to_owned(),
+                x: 0.5,
+                y: 0.5,
+                scale: 0.3,
+            }],
+            ..Scene::default()
+        };
+        outputs.set_scene(with_object.clone());
+        assert_eq!(rx.borrow_and_update().rev, 1);
+        outputs.set_scene(with_object);
+        assert!(!rx.has_changed().unwrap(), "rev ignored when comparing");
     }
 
     #[tokio::test]

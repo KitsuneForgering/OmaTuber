@@ -5,27 +5,63 @@
 <title>OmaTuber</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
-  img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; visibility: hidden; }
-  img.on { visibility: visible; }
+  img.avatar { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; visibility: hidden; }
+  img.avatar.on { visibility: visible; }
+  img.object { position: absolute; transform: translate(-50%, -50%); }
 </style>
 </head>
 <body>
-<img id="closed" alt="">
-<img id="open" alt="">
+<img class="avatar" id="closed" alt="">
+<img class="avatar" id="open" alt="">
+<img class="avatar" id="quiet" alt="">
+<img class="avatar" id="talking" alt="">
+<div id="objects"></div>
 <script>
   // The server resends the state every second; after this long without any
   // message the stream is presumed dead and the mouth closes.
   const STALE_MS = 3000;
-  const img = { closed: document.getElementById("closed"), open: document.getElementById("open") };
-  const has = { closed: false, open: false };
+  const img = {};
+  for (const k of ["closed", "open", "quiet", "talking"]) img[k] = document.getElementById(k);
+  const has = { closed: false, open: false, quiet: false, talking: false };
+  const objectsBox = document.getElementById("objects");
   let mouth = "closed";
+  let scene = { rev: 0, sentiment: null, objects: [] };
   let staleTimer;
 
+  // Same rule as library::Director::compose: a sentiment replaces the base;
+  // its talking image needs an open mouth; without a matching image the base
+  // shows through.
+  function shown() {
+    const open = mouth === "open";
+    if (scene.sentiment) {
+      if (open && has.talking) return "talking";
+      if (has.quiet) return "quiet";
+    }
+    return open && has.open ? "open" : "closed";
+  }
+
+  // Where object-fit: contain actually drew the visible avatar.
+  function avatarRect(el) {
+    const W = innerWidth, H = innerHeight;
+    if (!el || !el.naturalWidth) return { left: 0, top: 0, width: W, height: H };
+    const s = Math.min(W / el.naturalWidth, H / el.naturalHeight);
+    const width = el.naturalWidth * s, height = el.naturalHeight * s;
+    return { left: (W - width) / 2, top: (H - height) / 2, width, height };
+  }
+
+  function placeObjects(rect) {
+    for (const el of objectsBox.children) {
+      const o = el.dataset;
+      el.style.left = `${rect.left + Number(o.x) * rect.width}px`;
+      el.style.top = `${rect.top + Number(o.y) * rect.height}px`;
+      el.style.width = `${Number(o.scale) * rect.width}px`;
+    }
+  }
+
   function render() {
-    // Without an open image, the closed one stays up while talking.
-    const shown = mouth === "open" && has.open ? "open" : "closed";
-    img.closed.classList.toggle("on", shown === "closed" && has.closed);
-    img.open.classList.toggle("on", shown === "open");
+    const s = shown();
+    for (const k in img) img[k].classList.toggle("on", k === s && has[k]);
+    placeObjects(avatarRect(has[s] ? img[s] : null));
   }
 
   function alive() {
@@ -33,14 +69,33 @@
     staleTimer = setTimeout(() => { mouth = "closed"; render(); }, STALE_MS);
   }
 
+  function setSrc(k, url) {
+    has[k] = Boolean(url);
+    if (url) img[k].src = url;
+    else img[k].removeAttribute("src");
+  }
+
   const events = new EventSource("/events");
   events.addEventListener("images", (e) => {
     const d = JSON.parse(e.data);
-    for (const k of ["closed", "open"]) {
-      has[k] = d[k];
-      if (d[k]) img[k].src = `/${k}.png?rev=${d.rev}`;
-      else img[k].removeAttribute("src");
-    }
+    for (const k of ["closed", "open"]) setSrc(k, d[k] ? `/${k}.png?rev=${d.rev}` : null);
+    alive();
+    render();
+  });
+  events.addEventListener("scene", (e) => {
+    scene = JSON.parse(e.data);
+    const url = (key) => (key ? `/asset/${encodeURIComponent(key)}?rev=${scene.rev}` : null);
+    setSrc("quiet", url(scene.sentiment && scene.sentiment.quiet));
+    setSrc("talking", url(scene.sentiment && scene.sentiment.talking));
+    // New elements each time, so an animated object starts from its first frame.
+    objectsBox.replaceChildren(...scene.objects.map((o) => {
+      const el = new Image();
+      el.className = "object";
+      el.alt = "";
+      Object.assign(el.dataset, { x: o.x, y: o.y, scale: o.scale });
+      el.src = url(o.asset);
+      return el;
+    }));
     alive();
     render();
   });
@@ -49,6 +104,9 @@
     alive();
     render();
   });
+  // Natural sizes are known only after loading; resizing moves the avatar.
+  for (const k in img) img[k].addEventListener("load", render);
+  addEventListener("resize", render);
   // EventSource reconnects by itself; until then, show the closed mouth.
   events.onerror = () => { mouth = "closed"; render(); };
 </script>

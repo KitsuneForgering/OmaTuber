@@ -57,6 +57,43 @@ async fn main() {
         None => outputs.set_image(Mouth::Closed, face(false), "image/png"),
     }
     outputs.set_image(Mouth::Open, face(true), "image/png");
+    // DEMO_SCENE=1 adds a sentiment (the open-mouth fox as its quiet image)
+    // and a red disc object near the top of the avatar.
+    if std::env::var_os("DEMO_SCENE").is_some() {
+        let disc = RgbaImage::from_fn(64, 64, |x, y| {
+            let (dx, dy) = (x as f32 - 31.5, y as f32 - 31.5);
+            if dx * dx + dy * dy <= 30.0 * 30.0 {
+                Rgba([230, 30, 40, 255])
+            } else {
+                Rgba([0, 0, 0, 0])
+            }
+        });
+        let mut out = Cursor::new(Vec::new());
+        disc.write_to(&mut out, ImageFormat::Png).unwrap();
+        let mut assets = std::collections::HashMap::new();
+        assets.insert(
+            "s-q".to_owned(),
+            (Arc::from(omatuber::example::png(true)), "image/png"),
+        );
+        assets.insert(
+            "disc".to_owned(),
+            (Arc::from(out.into_inner()), "image/png"),
+        );
+        outputs.set_assets(assets);
+        outputs.set_scene(server::Scene {
+            sentiment: Some(server::SceneSentiment {
+                quiet: Some("s-q".to_owned()),
+                talking: None,
+            }),
+            objects: vec![server::SceneObject {
+                asset: "disc".to_owned(),
+                x: 0.5,
+                y: 0.15,
+                scale: 0.25,
+            }],
+            ..Default::default()
+        });
+    }
     let listener = server::bind(port).await.expect("bind");
     eprintln!("http://127.0.0.1:{port}/");
     tokio::spawn(server::serve(listener, outputs.clone()));
