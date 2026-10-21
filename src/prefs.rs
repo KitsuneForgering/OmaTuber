@@ -50,18 +50,24 @@ pub fn load(path: &Path) -> io::Result<Prefs> {
     }
 }
 
+pub fn save(path: &Path, prefs: &Prefs) -> io::Result<()> {
+    let json = serde_json::to_vec_pretty(prefs).map_err(io::Error::other)?;
+    write_atomic(path, &json)
+}
+
 /// Writes to a temporary file in the same directory, syncs it and renames it
 /// over the target, so an interrupted save leaves either the old or the new
 /// file, never a truncated one.
-pub fn save(path: &Path, prefs: &Prefs) -> io::Result<()> {
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other("path has no parent"))?;
     fs::create_dir_all(dir)?;
-    let tmp = path.with_extension("json.tmp");
-    let json = serde_json::to_vec_pretty(prefs).map_err(io::Error::other)?;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
     let mut file = File::create(&tmp)?;
-    file.write_all(&json)?;
+    file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
     fs::rename(&tmp, path)?;

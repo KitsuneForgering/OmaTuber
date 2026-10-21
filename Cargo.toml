@@ -16,7 +16,7 @@ rustfft = { version = "6.4", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
-uuid = { version = "1", features = ["serde"] }
+uuid = { version = "1", features = ["serde", "v4"] }
 
 [features]
 # Sound-type detection probe: PipeWire capture and the naive Bayes classifier.

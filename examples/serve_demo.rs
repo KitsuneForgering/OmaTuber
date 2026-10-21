@@ -50,7 +50,8 @@ async fn main() {
     // DEMO_CLOSED=/path/to/file serves that image (PNG, APNG or GIF) instead.
     match std::env::var_os("DEMO_CLOSED") {
         Some(path) => {
-            let png = omatuber::avatar::load(path.as_ref(), Default::default()).expect("DEMO_CLOSED");
+            let png =
+                omatuber::avatar::load(path.as_ref(), Default::default()).expect("DEMO_CLOSED");
             outputs.set_image(Mouth::Closed, png.bytes, png.kind.mime());
         }
         None => outputs.set_image(Mouth::Closed, face(false), "image/png"),
