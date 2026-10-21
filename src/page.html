@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>OmaTuber</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+  img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; visibility: hidden; }
+  img.on { visibility: visible; }
+</style>
+</head>
+<body>
+<img id="closed" alt="">
+<img id="open" alt="">
+<script>
+  // The server resends the state every second; after this long without any
+  // message the stream is presumed dead and the mouth closes.
+  const STALE_MS = 3000;
+  const img = { closed: document.getElementById("closed"), open: document.getElementById("open") };
+  const has = { closed: false, open: false };
+  let mouth = "closed";
+  let staleTimer;
+
+  function render() {
+    // Without an open image, the closed one stays up while talking.
+    const shown = mouth === "open" && has.open ? "open" : "closed";
+    img.closed.classList.toggle("on", shown === "closed" && has.closed);
+    img.open.classList.toggle("on", shown === "open");
+  }
+
+  function alive() {
+    clearTimeout(staleTimer);
+    staleTimer = setTimeout(() => { mouth = "closed"; render(); }, STALE_MS);
+  }
+
+  const events = new EventSource("/events");
+  events.addEventListener("images", (e) => {
+    const d = JSON.parse(e.data);
+    for (const k of ["closed", "open"]) {
+      has[k] = d[k];
+      if (d[k]) img[k].src = `/${k}.png?rev=${d.rev}`;
+      else img[k].removeAttribute("src");
+    }
+    alive();
+    render();
+  });
+  events.addEventListener("mouth", (e) => {
+    mouth = e.data;
+    alive();
+    render();
+  });
+  // EventSource reconnects by itself; until then, show the closed mouth.
+  events.onerror = () => { mouth = "closed"; render(); };
+</script>
+</body>
+</html>

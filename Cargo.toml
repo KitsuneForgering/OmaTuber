@@ -1,0 +1,33 @@
+[package]
+name = "omatuber"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+eframe = "0.37"
+futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+hound = { version = "3.5", optional = true }
+obws = { version = "0.15", features = ["events"] }
+pipewire = { version = "0.10", features = ["v0_3_44"], optional = true }
+rfd = "0.17"
+rustfft = { version = "6.4", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+uuid = { version = "1", features = ["serde"] }
+
+[features]
+# Sound-type detection probe: PipeWire capture and the naive Bayes classifier.
+sound = ["dep:hound", "dep:pipewire", "dep:rustfft"]
+
+[[bin]]
+name = "sound-probe"
+required-features = ["sound"]
+
+[dev-dependencies]
+egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["test-util", "macros", "rt", "io-util", "net"] }
+tower = { version = "0.5", features = ["util"] }

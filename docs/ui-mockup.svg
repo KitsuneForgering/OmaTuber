@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="title description">
+  <title id="title">Conceito da tela principal do OmaTuber</title>
+  <desc id="description">À esquerda, o avatar de exemplo aparece com a boca aberta, modo ao vivo e miniaturas de Quieto e Falando. À direita, estados separados mostram OBS conectado, microfone ativo, boca falando, fonte visível na cena e um medidor com marca de sensibilidade.</desc>
+  <defs>
+    <pattern id="checks" width="32" height="32" patternUnits="userSpaceOnUse">
+      <rect width="32" height="32" fill="#283440"/>
+      <rect width="16" height="16" fill="#33414c"/>
+      <rect x="16" y="16" width="16" height="16" fill="#33414c"/>
+    </pattern>
+    <clipPath id="stage-clip"><rect x="54" y="185" width="682" height="350" rx="14"/></clipPath>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#000" flood-opacity=".2"/>
+    </filter>
+    <style>
+      text { font-family: Inter, "DejaVu Sans", sans-serif; fill: #eef3f5; }
+      .muted { fill: #aab7c2; }
+      .small { font-size: 14px; }
+      .body { font-size: 17px; }
+      .heading { font-size: 20px; font-weight: 700; }
+      .label { font-size: 13px; font-weight: 700; letter-spacing: 1px; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="800" fill="#0b1219"/>
+  <rect x="30" y="26" width="48" height="48" rx="14" fill="#ff9a70"/>
+  <path d="M42 49h7l5-10 6 20 5-10h7" fill="none" stroke="#17222c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="92" y="50" font-size="25" font-weight="800">OmaTuber</text>
+  <text x="93" y="71" class="small muted">Seu avatar, pronto para aparecer no OBS</text>
+  <rect x="895" y="31" width="119" height="36" rx="18" fill="#223b34"/>
+  <circle cx="916" cy="49" r="5" fill="#8ee1af"/>
+  <text x="930" y="54" class="small" fill="#c7f1d6">AO VIVO</text>
+  <rect x="1026" y="31" width="144" height="36" rx="18" fill="#1a2832" stroke="#35505d"/>
+  <text x="1045" y="54" class="small">OBS conectado</text>
+
+  <rect x="30" y="109" width="730" height="618" rx="22" fill="#15212b" stroke="#2a3b47" filter="url(#shadow)"/>
+  <text x="55" y="151" class="heading">Prévia do avatar</text>
+  <text x="656" y="150" class="small muted">1:1</text>
+  <rect x="54" y="185" width="682" height="350" rx="14" fill="url(#checks)"/>
+  <g clip-path="url(#stage-clip)">
+    <ellipse cx="394" cy="540" rx="173" ry="30" fill="#13202a" opacity=".34"/>
+    <path d="M242 516c9-84 58-117 152-117s144 33 152 117" fill="#c16a7b" stroke="#512f46" stroke-width="7"/>
+    <path d="M333 417q61 37 122 0l-13 89H347z" fill="#e89caa"/>
+    <path d="M331 415q63 38 126 0" fill="none" stroke="#9b4d65" stroke-width="8"/>
+    <path d="M263 307 267 220q22-43 67 4l61 14 62-14q45-47 67-4l3 87" fill="#6c566a" stroke="#352c40" stroke-width="7"/>
+    <path d="M283 230q13-37 48 4l-41 32zM500 230q-13-37-48 4l41 32z" fill="#f2a4ac"/>
+    <ellipse cx="395" cy="341" rx="132" ry="118" fill="#f0b7b2" stroke="#6b4b5a" stroke-width="7"/>
+    <path d="M274 319q9-105 123-104 116 0 119 103-31-30-54-55-21 34-76 42-39 5-72-13-12 21-40 27z" fill="#6c566a" stroke="#352c40" stroke-width="6"/>
+    <path d="M322 337q23-18 46 0M423 337q23-18 46 0" fill="none" stroke="#473b4b" stroke-width="8" stroke-linecap="round"/>
+    <ellipse cx="395" cy="387" rx="22" ry="28" fill="#653443" stroke="#9d6470" stroke-width="4"/>
+    <ellipse cx="395" cy="392" rx="11" ry="13" fill="#f38a96"/>
+    <circle cx="313" cy="369" r="11" fill="#ef929d" opacity=".8"/>
+    <circle cx="476" cy="369" r="11" fill="#ef929d" opacity=".8"/>
+  </g>
+  <rect x="70" y="195" width="159" height="33" rx="16" fill="#162a28" stroke="#65c29b"/>
+  <circle cx="88" cy="211" r="5" fill="#8ee1af"/>
+  <text x="101" y="216" class="small">VOZ AO VIVO</text>
+  <rect x="71" y="478" width="275" height="40" rx="12" fill="#17222b" fill-opacity=".94"/>
+  <circle cx="92" cy="498" r="7" fill="#ff9a70"/>
+  <text x="111" y="503" class="body" font-weight="700">Falando</text>
+  <text x="194" y="503" class="small muted">voz detectada</text>
+
+  <rect x="54" y="558" width="318" height="143" rx="14" fill="#1b2a34" stroke="#35505d"/>
+  <rect x="70" y="574" width="112" height="110" rx="9" fill="url(#checks)"/>
+  <circle cx="126" cy="626" r="34" fill="#f0b7b2"/>
+  <path d="M103 618q9-7 18 0m12 0q9-7 18 0" fill="none" stroke="#473b4b" stroke-width="3" stroke-linecap="round"/>
+  <path d="M119 636q8 6 16 0" fill="none" stroke="#653443" stroke-width="3" stroke-linecap="round"/>
+  <text x="199" y="596" class="label muted">QUIETO</text>
+  <text x="199" y="628" class="body">quieto.png</text>
+  <text x="199" y="652" class="small muted">1024 × 1024</text>
+  <rect x="391" y="558" width="345" height="143" rx="14" fill="#2c292e" stroke="#ff9a70" stroke-width="2"/>
+  <rect x="406" y="574" width="112" height="110" rx="9" fill="url(#checks)"/>
+  <circle cx="462" cy="626" r="34" fill="#f0b7b2"/>
+  <path d="M439 618q9-7 18 0m12 0q9-7 18 0" fill="none" stroke="#473b4b" stroke-width="3" stroke-linecap="round"/>
+  <ellipse cx="462" cy="640" rx="7" ry="9" fill="#653443"/>
+  <text x="535" y="596" class="label" fill="#ffb08e">FALANDO</text>
+  <text x="535" y="628" class="body">falando.png</text>
+  <text x="535" y="652" class="small muted">Exibindo agora</text>
+
+  <rect x="790" y="109" width="380" height="349" rx="22" fill="#15212b" stroke="#2a3b47"/>
+  <text x="817" y="150" class="heading">O que está acontecendo</text>
+  <text x="817" y="172" class="small muted">Cada etapa mostra seu próprio estado.</text>
+  <path d="M839 211v177" stroke="#3d5660" stroke-width="3" stroke-dasharray="5 8"/>
+  <circle cx="839" cy="212" r="17" fill="#244338" stroke="#65c29b"/>
+  <path d="m832 212 5 5 9-11" fill="none" stroke="#a6edc0" stroke-width="3" stroke-linecap="round"/>
+  <text x="870" y="208" class="body" font-weight="700">OBS conectado</text>
+  <text x="870" y="229" class="small muted">Recebendo dados da cena</text>
+  <line x1="870" y1="245" x2="1141" y2="245" stroke="#30414d"/>
+  <circle cx="839" cy="270" r="17" fill="#244338" stroke="#65c29b"/>
+  <path d="m832 270 5 5 9-11" fill="none" stroke="#a6edc0" stroke-width="3" stroke-linecap="round"/>
+  <text x="870" y="266" class="body" font-weight="700">Microfone ativo</text>
+  <text x="870" y="287" class="small muted">Yeti Nano · som recebido agora</text>
+  <line x1="870" y1="303" x2="1141" y2="303" stroke="#30414d"/>
+  <circle cx="839" cy="328" r="17" fill="#583b35" stroke="#ff9a70"/>
+  <path d="M831 328h4l3-7 4 14 3-7h4" fill="none" stroke="#ffb08e" stroke-width="2" stroke-linejoin="round"/>
+  <text x="870" y="324" class="body" font-weight="700">Boca aberta</text>
+  <text x="870" y="345" class="small muted">Som acima da sensibilidade</text>
+  <line x1="870" y1="361" x2="1141" y2="361" stroke="#30414d"/>
+  <circle cx="839" cy="387" r="17" fill="#244338" stroke="#65c29b"/>
+  <path d="m832 387 5 5 9-11" fill="none" stroke="#a6edc0" stroke-width="3" stroke-linecap="round"/>
+  <text x="870" y="383" class="body" font-weight="700">Visível na cena Principal</text>
+  <text x="870" y="404" class="small muted">Avatar adicionado ao OBS</text>
+  <rect x="817" y="423" width="326" height="23" rx="10" fill="#253c33"/>
+  <text x="833" y="440" class="small" fill="#b9eccd">Pronto para aparecer na transmissão</text>
+
+  <rect x="790" y="475" width="380" height="252" rx="22" fill="#15212b" stroke="#2a3b47"/>
+  <text x="817" y="516" class="heading">Sua voz</text>
+  <text x="817" y="541" class="small muted">Yeti Nano</text>
+  <text x="1095" y="541" class="small" fill="#ffb08e">-18 dB</text>
+  <rect x="817" y="558" width="326" height="18" rx="9" fill="#273744"/>
+  <rect x="817" y="558" width="238" height="18" rx="9" fill="#ff9a70"/>
+  <line x1="977" y1="552" x2="977" y2="584" stroke="#f4f5d7" stroke-width="3"/>
+  <text x="817" y="599" class="small muted">silêncio</text>
+  <text x="932" y="599" class="small muted">marca</text>
+  <text x="1090" y="599" class="small muted">alto</text>
+  <text x="817" y="637" class="body">Sensibilidade</text>
+  <line x1="946" y1="630" x2="1135" y2="630" stroke="#415765" stroke-width="5" stroke-linecap="round"/>
+  <line x1="946" y1="630" x2="1023" y2="630" stroke="#ff9a70" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="1023" cy="630" r="10" fill="#ffb08e" stroke="#6d3e35" stroke-width="3"/>
+  <text x="817" y="675" class="small muted">A voz passou da marca e abriu a boca.</text>
+  <rect x="817" y="687" width="326" height="28" rx="9" fill="#24313b"/>
+  <text x="835" y="707" class="small">Testar boca</text>
+  <text x="1015" y="707" class="small muted">Prévia apenas</text>
+
+  <text x="32" y="769" class="small muted">CONCEITO VISUAL · Estados ilustrativos; a interface ainda será implementada.</text>
+  <text x="986" y="769" class="small muted">Ajuda  ·  Ajustes</text>
+</svg>
