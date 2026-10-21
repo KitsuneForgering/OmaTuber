@@ -15,3 +15,5 @@ pub mod server;
 pub mod sound;
 pub mod theme;
 pub mod view;
+#[cfg(feature = "sound")]
+pub mod voice;

@@ -53,6 +53,9 @@ struct App {
     obs: obs::Handle,
     /// Library reactions; the editor will send `Apply` and read its status.
     reactions: reactions::Handle,
+    /// Sound detection; dropping it stops the microphone.
+    #[cfg(feature = "sound")]
+    voice: Option<omatuber::voice::Handle>,
     view: ViewState,
     /// Configured file per slot, kept even when loading it failed.
     paths: [Option<PathBuf>; 2],
@@ -123,6 +126,8 @@ impl App {
             outputs,
             obs,
             reactions,
+            #[cfg(feature = "sound")]
+            voice: None,
             view: ViewState {
                 palette,
                 obs_port: saved.obs_port,
@@ -155,6 +160,7 @@ impl App {
             saved: saved.clone(),
         };
         app.start_server();
+        app.view.library.voice = initial_voice_view();
         app.load_library_textures(ctx, &library);
         for (mouth, path) in [
             (Mouth::Closed, saved.closed_png),
@@ -330,6 +336,7 @@ impl App {
                     .commands
                     .send(reactions::Command::ToggleObject(id));
             }
+            Action::SetVoice(on) => self.set_voice(ctx, on),
         }
     }
 
@@ -351,6 +358,37 @@ impl App {
             }
         }
     }
+
+    #[cfg(feature = "sound")]
+    fn set_voice(&mut self, ctx: &egui::Context, on: bool) {
+        use omatuber::{sound, voice};
+        let v = &mut self.view.library.voice;
+        v.error = None;
+        if !on {
+            self.voice = None;
+            v.running = false;
+            return;
+        }
+        match sound::load_model() {
+            Ok(model) => {
+                let ctx = ctx.clone();
+                let source = std::env::var("OMATUBER_SOURCE").ok();
+                let commands = self.reactions.commands.clone();
+                self.voice = Some(voice::start(model, source, commands, move || {
+                    ctx.request_repaint()
+                }));
+            }
+            Err(e) => {
+                v.enabled = false;
+                v.error = Some(format!(
+                    "Nenhum modelo de sons treinado ({e}). Grave exemplos com `sound-probe record <som>` e treine com `sound-probe train`."
+                ));
+            }
+        }
+    }
+
+    #[cfg(not(feature = "sound"))]
+    fn set_voice(&mut self, _ctx: &egui::Context, _on: bool) {}
 
     fn apply_library(&mut self) {
         let mut lib = self.view.library.draft.clone();
@@ -381,6 +419,20 @@ impl App {
                 }
                 // The reactions task reports the reason next to the item.
                 LibLoaded::Texture(_, Err(_)) => {}
+            }
+        }
+        #[cfg(feature = "sound")]
+        if let Some(handle) = &self.voice {
+            let st = handle.status.borrow().clone();
+            let v = &mut self.view.library.voice;
+            v.running = st.running;
+            v.classes = st.classes;
+            v.heard = st.stats.heard;
+            if st.error.is_some() && !st.running {
+                v.enabled = false;
+                v.error = st
+                    .error
+                    .map(|e| format!("Não foi possível ouvir o microfone: {e}"));
             }
         }
         let status = self.reactions.status.borrow().clone();
@@ -487,6 +539,24 @@ fn watch_theme(ctx: egui::Context) -> Receiver<theme::Palette> {
         }
     });
     rx
+}
+
+/// Whether sound detection is built in and which trained classes exist;
+/// detection itself starts off (plan).
+fn initial_voice_view() -> omatuber::library_view::VoiceView {
+    #[cfg(feature = "sound")]
+    {
+        let classes = omatuber::sound::load_model()
+            .map(|m| omatuber::voice::reaction_classes(&m))
+            .unwrap_or_default();
+        omatuber::library_view::VoiceView {
+            available: true,
+            classes,
+            ..Default::default()
+        }
+    }
+    #[cfg(not(feature = "sound"))]
+    omatuber::library_view::VoiceView::default()
 }
 
 /// Results from library background threads.

@@ -99,6 +99,8 @@ pub enum Action {
     TriggerSentiment(Uuid),
     ClearReaction,
     ToggleObject(Uuid),
+    /// Start or stop listening for trained sounds.
+    SetVoice(bool),
 }
 
 /// Where the preview's mouth comes from right now.

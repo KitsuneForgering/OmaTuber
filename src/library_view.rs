@@ -37,6 +37,20 @@ pub struct LibraryView {
     /// First frame of each library file, for thumbnails and the preview.
     pub textures: HashMap<PathBuf, (TextureHandle, [u32; 2])>,
     pub save_error: Option<String>,
+    pub voice: VoiceView,
+}
+
+/// Sound detection as the editor shows it; filled by `main` from the voice
+/// thread. `available` is false when built without the `sound` feature.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VoiceView {
+    pub available: bool,
+    pub enabled: bool,
+    pub running: bool,
+    pub error: Option<String>,
+    /// Trained classes a sentiment can be bound to.
+    pub classes: Vec<String>,
+    pub heard: Option<(String, f32)>,
 }
 
 impl LibraryView {
@@ -116,6 +130,11 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
         ui.add(egui::Label::new(RichText::new(e.as_str()).color(p.red)).wrap());
     }
     ui.add_space(8.0);
+
+    if lib.voice.available {
+        voice_section(ui, &p, &mut lib.voice, actions);
+        ui.add_space(8.0);
+    }
 
     // ------------------------------------------------------------ sentiments
     ui.horizontal(|ui| {
@@ -243,6 +262,28 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
                             "Um sentimento de prioridade maior não é interrompido por um menor",
                         );
                 });
+                if lib.voice.available {
+                    ui.horizontal(|ui| {
+                        let label = ui.label("Som que aciona");
+                        let current = sentiment.sound.clone().unwrap_or_else(|| "nenhum".to_owned());
+                        egui::ComboBox::from_id_salt("sound")
+                            .selected_text(current)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut sentiment.sound, None, "nenhum");
+                                for class in &lib.voice.classes {
+                                    ui.selectable_value(&mut sentiment.sound, Some(class.clone()), class);
+                                }
+                            })
+                            .response
+                            .labelled_by(label.id);
+                        if let Some(class) = &sentiment.sound
+                            && !lib.voice.classes.is_empty()
+                            && !lib.voice.classes.contains(class)
+                        {
+                            ui.label(RichText::new("esse som não está no modelo treinado").color(p.yellow));
+                        }
+                    });
+                }
                 if !objects.is_empty() {
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Objetos junto:");
@@ -369,6 +410,44 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
             s.objects.retain(|o| !removed_ids.contains(o));
         }
     }
+}
+
+fn voice_section(ui: &mut egui::Ui, p: &Palette, voice: &mut VoiceView, actions: &mut Vec<Action>) {
+    card(p, voice.running).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new("Reagir a sons").size(16.0).strong());
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    "Reconhece sons que você ensinou, como sua risada, e mostra o sentimento ligado a eles. \
+                     Lê o microfone pelo PipeWire; o áudio é analisado na memória e descartado, nada é gravado.",
+                )
+                .color(p.muted),
+            )
+            .wrap(),
+        );
+        let mut enabled = voice.enabled;
+        if ui.checkbox(&mut enabled, "Ouvir o microfone").changed() {
+            voice.enabled = enabled;
+            actions.push(Action::SetVoice(enabled));
+        }
+        if let Some(e) = &voice.error {
+            ui.add(egui::Label::new(RichText::new(e.as_str()).color(p.red)).wrap());
+        } else if voice.running {
+            let heard = match &voice.heard {
+                Some((class, prob)) => format!("Ouvindo · agora: {class} ({:.0}%)", prob * 100.0),
+                None => "Ouvindo · silêncio".to_owned(),
+            };
+            ui.label(RichText::new(heard).color(p.green));
+        }
+        if !voice.classes.is_empty() {
+            ui.label(
+                RichText::new(format!("Sons treinados: {}", voice.classes.join(", ")))
+                    .small()
+                    .color(p.muted),
+            );
+        }
+    });
 }
 
 fn accent(p: &Palette, text: &str) -> egui::Button<'static> {

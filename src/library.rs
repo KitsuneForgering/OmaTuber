@@ -38,6 +38,10 @@ pub struct Sentiment {
     /// Objects that appear together with this sentiment.
     pub objects: Vec<Uuid>,
     pub enabled: bool,
+    /// Trained sound class that triggers it (a sound the person taught, not
+    /// an inferred emotion). Missing in libraries saved before this existed.
+    #[serde(default)]
+    pub sound: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +76,7 @@ impl Sentiment {
             ending: Ending::After { ms: 3000 },
             objects: Vec::new(),
             enabled: true,
+            sound: None,
         }
     }
 }
@@ -93,6 +98,19 @@ impl Object {
 impl Library {
     pub fn sentiment(&self, id: Uuid) -> Option<&Sentiment> {
         self.sentiments.iter().find(|s| s.id == id && s.enabled)
+    }
+
+    /// Highest-priority enabled sentiment bound to a sound class; the first
+    /// in library order wins a tie.
+    pub fn for_sound(&self, class: &str) -> Option<Uuid> {
+        self.sentiments
+            .iter()
+            .filter(|s| s.enabled && s.sound.as_deref() == Some(class))
+            .fold(None::<&Sentiment>, |best, s| match best {
+                Some(b) if b.priority >= s.priority => Some(b),
+                _ => Some(s),
+            })
+            .map(|s| s.id)
     }
 
     pub fn object(&self, id: Uuid) -> Option<&Object> {
@@ -442,6 +460,25 @@ mod tests {
             d.compose(&lib, Mouth::Closed, ms(1000)).objects.is_empty(),
             "mug left with sentiment"
         );
+    }
+
+    #[test]
+    fn sound_class_picks_highest_priority_enabled_sentiment() {
+        let (mut lib, happy, angry, _) = lib();
+        assert_eq!(lib.for_sound("risada"), None);
+        lib.sentiments[0].sound = Some("risada".to_owned());
+        lib.sentiments[1].sound = Some("risada".to_owned());
+        assert_eq!(lib.for_sound("risada"), Some(angry), "priority 2 beats 1");
+        lib.sentiments[1].enabled = false;
+        assert_eq!(lib.for_sound("risada"), Some(happy));
+        assert_eq!(lib.for_sound("grito"), None);
+    }
+
+    #[test]
+    fn libraries_saved_without_sound_still_load() {
+        let json = r#"{"sentiments":[{"id":"00000000-0000-0000-0000-000000000001","name":"A","quiet":null,"talking":null,"priority":1,"ending":"UntilNext","objects":[],"enabled":true}],"objects":[]}"#;
+        let lib: Library = serde_json::from_str(json).unwrap();
+        assert_eq!(lib.sentiments[0].sound, None);
     }
 
     #[test]

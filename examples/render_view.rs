@@ -177,6 +177,7 @@ fn main() {
     tired.priority = 2;
     let mug = Object::new("Caneca", "quieto.png".into());
     happy.objects = vec![mug.id];
+    happy.sound = Some("risada".to_owned());
     let on_air = happy.id;
     lib.sentiments = vec![happy, tired];
     lib.objects = vec![mug];
@@ -193,6 +194,14 @@ fn main() {
                 draft,
                 applied: lib,
                 active: Some((on_air, Source::Shortcut)),
+                voice: omatuber::library_view::VoiceView {
+                    available: true,
+                    enabled: true,
+                    running: true,
+                    classes: vec!["risada".to_owned(), "susto".to_owned()],
+                    heard: Some(("risada".to_owned(), 0.82)),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             ..configured()

@@ -26,6 +26,8 @@ pub enum Command {
         source: Source,
         reply: Option<oneshot::Sender<bool>>,
     },
+    /// A trained sound class was heard; shows the sentiment bound to it.
+    Sound(String),
     /// Back to the base avatar.
     Clear,
     ToggleObject(Uuid),
@@ -99,6 +101,11 @@ async fn run(
                             .is_some_and(|id| director.trigger(&lib, id, source, now));
                         if let Some(reply) = reply {
                             let _ = reply.send(took);
+                        }
+                    }
+                    Command::Sound(class) => {
+                        if let Some(id) = lib.for_sound(&class) {
+                            director.trigger(&lib, id, Source::Voice, now);
                         }
                     }
                     Command::Clear => director.clear(),

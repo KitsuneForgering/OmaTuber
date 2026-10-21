@@ -194,3 +194,28 @@ async fn cli_reaches_the_running_server() {
     let r = tokio::task::spawn_blocking(move || omatuber::cli::run(&args(&["base"]), closed_port));
     assert_eq!(r.await.unwrap(), Some(1));
 }
+
+#[tokio::test]
+async fn heard_sound_shows_its_sentiment_as_voice() {
+    let (dir, closed, open) = files("sound");
+    let outputs = Outputs::default();
+    let mut lib = library(closed, open, 60_000);
+    lib.sentiments[0].sound = Some("risada".to_owned());
+    let id = lib.sentiments[0].id;
+    let handle = reactions::spawn(outputs.clone(), lib, || {});
+    handle
+        .commands
+        .send(Command::Sound("grito".to_owned()))
+        .unwrap();
+    handle
+        .commands
+        .send(Command::Sound("risada".to_owned()))
+        .unwrap();
+    wait_until(&outputs, |s| s.sentiment.is_some()).await;
+    assert_eq!(
+        handle.status.borrow().active,
+        Some((id, omatuber::library::Source::Voice)),
+        "unbound sound ignored, bound one shown as voice"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

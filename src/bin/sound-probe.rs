@@ -30,13 +30,12 @@ use std::time::{Duration, Instant};
 
 use omatuber::capture;
 use omatuber::sound::{
-    Analyzer, Detector, Features, Model, SAMPLE_RATE, SILENCE_DB, WINDOW_HOP_SAMPLES,
-    WINDOW_SAMPLES, argmax, leave_one_out, rms_db,
+    Analyzer, BACKGROUND, Detector, Features, Model, SAMPLE_RATE, SILENCE_DB, WINDOW_HOP_SAMPLES,
+    WINDOW_SAMPLES, argmax, data_dir, leave_one_out, rms_db,
 };
 
 const USAGE: &str = "usage: sound-probe levels [seconds] | record <class> [clips] [seconds] | train | \
                      live [min_probability] [confirm_windows] | classify <file.wav>";
-const BACKGROUND: [&str; 2] = ["fala", "outros"];
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -67,17 +66,6 @@ fn main() -> ExitCode {
 
 fn parse<T: std::str::FromStr>(s: &str) -> Result<T, String> {
     s.parse().map_err(|_| format!("invalid number: {s}"))
-}
-
-fn data_dir() -> Result<PathBuf, String> {
-    if let Some(d) = env::var_os("OMATUBER_DATA") {
-        return Ok(PathBuf::from(d));
-    }
-    if let Some(d) = env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
-        return Ok(PathBuf::from(d).join("omatuber"));
-    }
-    let home = env::var_os("HOME").ok_or("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".local/share/omatuber"))
 }
 
 fn open_mic() -> Result<Receiver<Vec<f32>>, String> {
@@ -313,10 +301,7 @@ fn truncate(s: &str, n: usize) -> String {
 }
 
 fn load_model() -> Result<Model, String> {
-    let path = data_dir()?.join("bayes.json");
-    let text = fs::read_to_string(&path)
-        .map_err(|e| format!("{}: {e}; run `train` first", path.display()))?;
-    Model::from_json(&text)
+    omatuber::sound::load_model().map_err(|e| format!("{e}; run `train` first"))
 }
 
 fn top(model: &Model, p: &[f32], n: usize) -> String {

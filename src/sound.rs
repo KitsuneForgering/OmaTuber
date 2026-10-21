@@ -33,6 +33,31 @@ const RHYTHM_LAGS: std::ops::RangeInclusive<usize> = 10..=25;
 pub const SILENCE_DB: f32 = -50.0;
 
 pub const N_FEATURES: usize = MEL_BANDS + 12;
+
+/// Classes that compete in the classifier but never fire a reaction: plain
+/// speech and everyday noise (typing, clicks, music).
+pub const BACKGROUND: [&str; 2] = ["fala", "outros"];
+
+/// Where examples and the model live: `$OMATUBER_DATA`, else
+/// `$XDG_DATA_HOME/omatuber`, else `~/.local/share/omatuber`.
+pub fn data_dir() -> Result<std::path::PathBuf, String> {
+    use std::path::PathBuf;
+    if let Some(d) = std::env::var_os("OMATUBER_DATA") {
+        return Ok(PathBuf::from(d));
+    }
+    if let Some(d) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
+        return Ok(PathBuf::from(d).join("omatuber"));
+    }
+    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+    Ok(PathBuf::from(home).join(".local/share/omatuber"))
+}
+
+/// The trained model, as `sound-probe train` saves it.
+pub fn load_model() -> Result<Model, String> {
+    let path = data_dir()?.join("bayes.json");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Model::from_json(&text)
+}
 pub type Features = [f32; N_FEATURES];
 
 struct Frame {
