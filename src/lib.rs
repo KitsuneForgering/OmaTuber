@@ -1,12 +1,14 @@
 pub mod avatar;
 #[cfg(feature = "sound")]
 pub mod capture;
+pub mod cli;
 pub mod example;
 pub mod library;
 pub mod meter;
 pub mod mouth;
 pub mod obs;
 pub mod prefs;
+pub mod reactions;
 pub mod server;
 #[cfg(feature = "sound")]
 pub mod sound;

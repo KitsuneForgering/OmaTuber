@@ -6,23 +6,25 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Path as AxumPath, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, Sse};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use futures_util::Stream;
 use futures_util::stream;
 use serde::Serialize;
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, Interval, interval_at};
 
+use crate::library::Source;
 use crate::mouth::Mouth;
+use crate::reactions;
 
 pub const DEFAULT_PORT: u16 = 39017;
 
@@ -77,6 +79,8 @@ pub struct Outputs {
     scene: watch::Sender<Scene>,
     /// Validated files by key; the only files `/asset/{key}` can return.
     assets: Arc<RwLock<HashMap<String, Served>>>,
+    /// Where `/react` and `/base` send requests, once reactions are running.
+    reactions: Arc<Mutex<Option<mpsc::UnboundedSender<reactions::Command>>>>,
 }
 
 impl Default for Outputs {
@@ -86,6 +90,7 @@ impl Default for Outputs {
             images: watch::Sender::new(Images::default()),
             scene: watch::Sender::new(Scene::default()),
             assets: Arc::default(),
+            reactions: Arc::default(),
         }
     }
 }
@@ -93,6 +98,19 @@ impl Default for Outputs {
 impl Outputs {
     pub fn mouth(&self) -> Mouth {
         *self.mouth.borrow()
+    }
+
+    pub fn scene(&self) -> Scene {
+        self.scene.borrow().clone()
+    }
+
+    pub fn set_reaction_handler(&self, tx: mpsc::UnboundedSender<reactions::Command>) {
+        *self.reactions.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+    }
+
+    fn send_reaction(&self, cmd: reactions::Command) -> bool {
+        let guard = self.reactions.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().is_some_and(|tx| tx.send(cmd).is_ok())
     }
 
     /// Replaces the set of servable assets, e.g. after the library changed.
@@ -148,6 +166,8 @@ pub fn router(outputs: Outputs) -> Router {
         .route("/open.png", get(|s| image(s, Mouth::Open)))
         .route("/events", get(events))
         .route("/asset/{key}", get(asset))
+        .route("/react/{name}", post(react))
+        .route("/base", post(base))
         .with_state(outputs)
 }
 
@@ -187,6 +207,57 @@ async fn asset(State(outputs): State<Outputs>, AxumPath(key): AxumPath<String>) 
         )
             .into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Requests that change the avatar must come from this machine's own tools:
+/// the custom header forces a CORS preflight that this server never grants,
+/// so web pages cannot send it cross-origin, and checking `Host` rejects DNS
+/// rebinding (a foreign domain resolving to 127.0.0.1).
+fn from_local_tool(headers: &HeaderMap) -> bool {
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let name = host.rsplit_once(':').map_or(host, |(name, _)| name);
+    headers.contains_key(TOOL_HEADER) && matches!(name, "127.0.0.1" | "localhost")
+}
+
+/// Header `omatuber reagir` sends; see `from_local_tool`.
+pub const TOOL_HEADER: &str = "x-omatuber";
+
+async fn react(
+    State(outputs): State<Outputs>,
+    headers: HeaderMap,
+    AxumPath(name): AxumPath<String>,
+) -> StatusCode {
+    if !from_local_tool(&headers) {
+        return StatusCode::FORBIDDEN;
+    }
+    let (reply, rx) = oneshot::channel();
+    let cmd = reactions::Command::Trigger {
+        target: name,
+        source: Source::Shortcut,
+        reply: Some(reply),
+    };
+    if !outputs.send_reaction(cmd) {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
+    match tokio::time::timeout(Duration::from_secs(2), rx).await {
+        Ok(Ok(true)) => StatusCode::NO_CONTENT,
+        Ok(Ok(false)) => StatusCode::NOT_FOUND,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+async fn base(State(outputs): State<Outputs>, headers: HeaderMap) -> StatusCode {
+    if !from_local_tool(&headers) {
+        return StatusCode::FORBIDDEN;
+    }
+    if outputs.send_reaction(reactions::Command::Clear) {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
     }
 }
 

@@ -203,6 +203,12 @@ impl Director {
         }
     }
 
+    /// Sentiment currently on screen and what triggered it. Expiry and
+    /// validity are applied by `compose`; call it first.
+    pub fn active(&self) -> Option<(Uuid, Source)> {
+        self.active.map(|a| (a.id, a.source))
+    }
+
     /// Time until the composition changes by itself, for scheduling a redraw.
     pub fn next_change(&self, now: Duration) -> Option<Duration> {
         self.active?.until.map(|u| u.saturating_sub(now))

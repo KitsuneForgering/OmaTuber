@@ -10,8 +10,13 @@ use omatuber::prefs::{self, Prefs};
 use omatuber::server::{self, Outputs};
 use omatuber::theme;
 use omatuber::view::{self, Action, FLOOR_DB, HYSTERESIS_DB, SlotView, ViewState};
+use omatuber::{cli, library, reactions};
 
 fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = cli::run(&args, server::DEFAULT_PORT) {
+        std::process::exit(code);
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("OmaTuber")
@@ -45,6 +50,9 @@ struct App {
     runtime: tokio::runtime::Runtime,
     outputs: Outputs,
     obs: obs::Handle,
+    /// Library reactions; the editor will send `Apply` and read its status.
+    #[allow(dead_code)]
+    reactions: reactions::Handle,
     view: ViewState,
     /// Configured file per slot, kept even when loading it failed.
     paths: [Option<PathBuf>; 2],
@@ -68,6 +76,20 @@ impl App {
             let _guard = runtime.enter();
             let ctx = ctx.clone();
             obs::spawn(outputs.clone(), move || ctx.request_repaint())
+        };
+        let (library, library_error) = match library::default_path().as_deref().map(library::load) {
+            Some(Ok(lib)) => (lib, None),
+            // Start empty and leave the bad file alone; nothing edits it yet.
+            Some(Err(e)) => (
+                Default::default(),
+                Some(format!("Biblioteca ignorada: {e}")),
+            ),
+            None => (Default::default(), None),
+        };
+        let reactions = {
+            let _guard = runtime.enter();
+            let ctx = ctx.clone();
+            reactions::spawn(outputs.clone(), library, move || ctx.request_repaint())
         };
 
         let prefs_path = prefs::default_path();
@@ -95,6 +117,7 @@ impl App {
             runtime,
             outputs,
             obs,
+            reactions,
             view: ViewState {
                 palette,
                 obs_port: saved.obs_port,
@@ -105,7 +128,7 @@ impl App {
                 slots: Default::default(),
                 picking: false,
                 server: Err(String::new()),
-                prefs_error,
+                prefs_error: prefs_error.or(library_error),
                 // The password is not saved, so every session starts here.
                 show_connection: true,
                 copied_at: None,
