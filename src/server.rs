@@ -15,6 +15,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
+use axum::serve::ListenerExt;
 use futures_util::Stream;
 use futures_util::stream;
 use serde::Serialize;
@@ -163,6 +164,13 @@ pub async fn bind(port: u16) -> std::io::Result<TcpListener> {
 }
 
 pub async fn serve(listener: TcpListener, outputs: Outputs) -> std::io::Result<()> {
+    // SSE sends many tiny writes. With Nagle's algorithm, a write right after
+    // an unacknowledged one can wait for the client's delayed ACK (~40 ms on
+    // Linux), as measured on the fake OBS socket (tests/common). Mouth
+    // changes can come within that window, so the page's socket skips it.
+    let listener = listener.tap_io(|tcp| {
+        let _ = tcp.set_nodelay(true);
+    });
     axum::serve(listener, router(outputs)).await
 }
 

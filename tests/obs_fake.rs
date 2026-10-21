@@ -387,3 +387,88 @@ async fn mute_state_follows_obs() {
     })
     .await;
 }
+
+/// Our share of the mouth latency: from an InputVolumeMeters event leaving
+/// (fake) OBS to `mouth: open` arriving at a browser-source SSE client,
+/// through the real worker, gate, outputs and HTTP server. OBS's own 50 ms
+/// meter cadence comes on top. Run with
+/// `cargo test --test obs_fake mouth_latency -- --ignored --nocapture`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn mouth_latency_from_meter_to_page() {
+    use std::time::Instant;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (port, obs_ctl, _) = fake_obs("certa").await;
+    let outputs = Outputs::default();
+    let listener = omatuber::server::bind(0).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(omatuber::server::serve(listener, outputs.clone()));
+    let worker = obs::spawn(outputs, || {});
+    let mut status = worker.status.clone();
+    worker.commands.send(connect(port, "certa")).unwrap();
+    wait_for(&mut status, "connected", |s| {
+        s.connection == Connection::Connected
+    })
+    .await;
+    worker.commands.send(Command::Select(Some(MIC))).unwrap();
+
+    let mut sse = tokio::net::TcpStream::connect(addr).await.unwrap();
+    sse.write_all(b"GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    // Reads until `needle` shows up after position `from`; returns new end.
+    async fn read_until(
+        sse: &mut tokio::net::TcpStream,
+        buf: &mut Vec<u8>,
+        chunk: &mut [u8],
+        from: usize,
+        needle: &str,
+    ) -> usize {
+        loop {
+            if let Some(i) = String::from_utf8_lossy(&buf[from..]).find(needle) {
+                return from + i + needle.len();
+            }
+            let n = sse.read(chunk).await.unwrap();
+            assert!(n > 0);
+            buf.extend_from_slice(&chunk[..n]);
+        }
+    }
+    let mut pos = read_until(&mut sse, &mut buf, &mut chunk, 0, "data: closed").await;
+
+    let mut samples = Vec::new();
+    for _ in 0..60 {
+        let t0 = Instant::now();
+        obs_ctl.send(Control::Meter(0.3)).unwrap();
+        pos = read_until(&mut sse, &mut buf, &mut chunk, pos, "data: open").await;
+        samples.push(t0.elapsed().as_secs_f64() * 1000.0);
+        // Silence until the gate closes (150 ms hold), then the next trial.
+        for _ in 0..6 {
+            obs_ctl.send(Control::Meter(0.0)).unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        pos = read_until(&mut sse, &mut buf, &mut chunk, pos, "data: closed").await;
+    }
+    let slow: Vec<(usize, f64)> = samples
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, ms)| *ms > 5.0)
+        .collect();
+    eprintln!("trials over 5 ms (index, ms): {slow:?}");
+    samples.sort_by(f64::total_cmp);
+    let pct = |p: f64| samples[((samples.len() - 1) as f64 * p).round() as usize];
+    eprintln!(
+        "meter → page, {} trials: p50 {:.2} ms, p95 {:.2} ms, max {:.2} ms",
+        samples.len(),
+        pct(0.5),
+        pct(0.95),
+        samples[samples.len() - 1]
+    );
+    assert!(
+        pct(0.95) < 50.0,
+        "our share should be well under one meter period"
+    );
+}

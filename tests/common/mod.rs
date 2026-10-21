@@ -78,6 +78,13 @@ pub enum Control {
     Mute(bool),
 }
 
+/// Nagle stays on, as in obs-websocket: neither its `WebSocketServer.cpp`
+/// nor websocketpp's asio transport (`connection.hpp`, `endpoint.hpp`)
+/// sets TCP_NODELAY. A write right after another unacknowledged one then
+/// waits for the client's delayed ACK, ~40 ms on Linux; the latency test
+/// shows it once, on the first meter event after a request's response.
+pub const NODELAY: bool = false;
+
 pub type Shared = Arc<Mutex<World>>;
 
 /// Accepts connections one after another, like OBS staying up across
@@ -93,6 +100,7 @@ pub async fn fake_obs(password: &'static str) -> (u16, mpsc::UnboundedSender<Con
             let Ok((tcp, _)) = listener.accept().await else {
                 return;
             };
+            let _ = tcp.set_nodelay(NODELAY);
             let Ok((_, ws)) = ServerBuilder::new().accept(tcp).await else {
                 continue;
             };
