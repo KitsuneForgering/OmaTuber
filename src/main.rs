@@ -263,9 +263,8 @@ impl App {
         let slot = &mut self.view.slots[i];
         match result {
             Ok(png) => {
-                let size = [png.width as usize, png.height as usize];
                 let mut textures = png.frames.iter().enumerate().map(|(f, frame)| {
-                    let pixels = egui::ColorImage::from_rgba_unmultiplied(size, &frame.rgba);
+                    let pixels = preview_image(&frame.rgba, png.width, png.height);
                     let name = format!("avatar-{i}-{f}");
                     (
                         ctx.load_texture(name, pixels, TextureOptions::LINEAR),
@@ -851,18 +850,20 @@ type Decoded = (Vec<(egui::ColorImage, Duration)>, [u32; 2]);
 
 fn all_frames(path: &Path) -> Result<Decoded, String> {
     let png = avatar::load(path, avatar::Limits::default()).map_err(|e| e.to_string())?;
-    let size = [png.width as usize, png.height as usize];
     let frames = png
         .frames
         .iter()
-        .map(|f| {
-            (
-                egui::ColorImage::from_rgba_unmultiplied(size, &f.rgba),
-                f.delay,
-            )
-        })
+        .map(|f| (preview_image(&f.rgba, png.width, png.height), f.delay))
         .collect();
     Ok((frames, [png.width, png.height]))
+}
+
+/// Texture pixels for the preview, at most `PREVIEW_MAX_SIDE` per side. The
+/// reported image size stays the original; only aspect ratio matters for
+/// drawing.
+fn preview_image(rgba: &[u8], width: u32, height: u32) -> egui::ColorImage {
+    let (px, [w, h]) = avatar::preview_pixels(rgba, width, height, avatar::PREVIEW_MAX_SIDE);
+    egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], &px)
 }
 
 fn file_name(path: &Path) -> String {

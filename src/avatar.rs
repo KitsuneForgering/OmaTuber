@@ -116,6 +116,37 @@ pub fn frame_index(delays: &[Duration], elapsed: Duration) -> (usize, Option<Dur
     (delays.len() - 1, Some(Duration::ZERO))
 }
 
+/// Longest side of preview textures. The stage draws at most ~440 px tall
+/// (~880 px on a 2x display); full-size frames would only cost memory, e.g.
+/// 1.6 GiB for 100 frames of 2048×2048. The browser source still gets the
+/// original file.
+pub const PREVIEW_MAX_SIDE: u32 = 768;
+
+/// Pixels for a preview texture: scaled down so neither side exceeds
+/// `max_side`, keeping the aspect ratio, and returned **premultiplied**.
+/// Scaling premultiplied pixels keeps transparent (black) pixels from
+/// darkening the edges of the avatar.
+pub fn preview_pixels(rgba: &[u8], width: u32, height: u32, max_side: u32) -> (Vec<u8>, [u32; 2]) {
+    let mut premultiplied = rgba.to_vec();
+    for px in premultiplied.as_chunks_mut::<4>().0 {
+        let a = u16::from(px[3]);
+        for c in &mut px[..3] {
+            *c = ((u16::from(*c) * a + 127) / 255) as u8;
+        }
+    }
+    let longest = width.max(height);
+    if longest <= max_side {
+        return (premultiplied, [width, height]);
+    }
+    let scale = max_side as f32 / longest as f32;
+    let w = ((width as f32 * scale).round() as u32).max(1);
+    let h = ((height as f32 * scale).round() as u32).max(1);
+    let image =
+        image::RgbaImage::from_raw(width, height, premultiplied).expect("buffer matches size");
+    let small = image::imageops::resize(&image, w, h, image::imageops::FilterType::Triangle);
+    (small.into_raw(), [w, h])
+}
+
 /// Chromium shows frames that ask for ≤ 10 ms for 100 ms instead
 /// (`third_party/blink/renderer/platform/graphics/deferred_image_decoder.cc`,
 /// `FrameDurationAtIndex`). The preview follows it to match the browser source.
@@ -447,6 +478,52 @@ mod tests {
             Err(LoadError::TooLong { .. })
         ));
         assert!(decode(apng(&colors, &[100; 5]), Limits::default()).is_ok());
+    }
+
+    #[test]
+    fn preview_pixels_shrink_large_images_only() {
+        let big = vec![255u8; 2048 * 1024 * 4];
+        let (px, size) = preview_pixels(&big, 2048, 1024, PREVIEW_MAX_SIDE);
+        assert_eq!(size, [768, 384], "aspect kept");
+        assert_eq!(px.len(), 768 * 384 * 4);
+        // Memory for 100 frames: 800 MiB at full size, 112.5 MiB in preview.
+        assert_eq!(big.len() * 100 / (px.len() * 100), 7);
+        let (px, size) = preview_pixels(&[1, 2, 3, 255], 1, 1, PREVIEW_MAX_SIDE);
+        assert_eq!(
+            (px, size),
+            (vec![1, 2, 3, 255], [1, 1]),
+            "small images untouched"
+        );
+    }
+
+    #[test]
+    fn preview_pixels_are_premultiplied_without_dark_edges() {
+        // White square on transparent black, halved: edge pixels mix both.
+        let (w, h) = (8u32, 8u32);
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w / 2 {
+                rgba[((y * w + x) * 4) as usize..][..4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+        let (px, [sw, _]) = preview_pixels(&rgba, w, h, 4);
+        assert_eq!(sw, 4);
+        for p in px.as_chunks::<4>().0 {
+            // Premultiplied white: every channel equals alpha (±1 rounding).
+            assert!(
+                p[..3].iter().all(|&c| c.abs_diff(p[3]) <= 1),
+                "dark edge: {p:?}"
+            );
+        }
+        assert!(
+            px.as_chunks::<4>().0.iter().any(|p| p[3] > 0 && p[3] < 255),
+            "some edge is partial"
+        );
+        // Half-transparent red becomes half-intensity premultiplied red.
+        assert_eq!(
+            preview_pixels(&[255, 0, 0, 128], 1, 1, 4).0,
+            vec![128, 0, 0, 128]
+        );
     }
 
     #[test]
