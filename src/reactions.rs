@@ -44,6 +44,9 @@ pub struct Status {
     pub errors: HashMap<Uuid, String>,
     /// Triggers so far; a change means the sentiment's image restarted.
     pub triggers: u64,
+    /// Libraries applied so far; 0 until the first one is loaded, so
+    /// callers can wait for the task to be ready.
+    pub generation: u64,
 }
 
 pub struct Handle {
@@ -247,6 +250,7 @@ fn publish(
         objects: c.objects,
         errors: errors.clone(),
         triggers: director.triggers(),
+        generation,
     };
     if status.send_if_modified(|s| std::mem::replace(s, new.clone()) != new) {
         notify();

@@ -42,6 +42,21 @@ async fn post(outputs: &Outputs, uri: &str, host: &str, tool: bool) -> StatusCod
         .status()
 }
 
+/// Waits until the reactions task has loaded its first library; requests
+/// sent before that get 503 ("o OmaTuber está abrindo"), which is right for
+/// the app but would make these tests depend on machine load.
+async fn ready(handle: reactions::Handle) -> reactions::Handle {
+    let mut status = handle.status.clone();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        status.wait_for(|s| s.generation >= 1),
+    )
+    .await
+    .expect("reactions task ready")
+    .unwrap();
+    handle
+}
+
 async fn wait_until(outputs: &Outputs, f: impl Fn(&server::Scene) -> bool) -> server::Scene {
     for _ in 0..200 {
         let scene = outputs.scene();
@@ -59,7 +74,7 @@ async fn shortcut_triggers_by_name_and_returns_to_base() {
     let outputs = Outputs::default();
     let lib = library(closed, open, 300);
     let id = lib.sentiments[0].id;
-    let handle = reactions::spawn(outputs.clone(), lib, || {});
+    let handle = ready(reactions::spawn(outputs.clone(), lib, || {})).await;
     wait_until(&outputs, |_| true).await;
 
     assert_eq!(
@@ -93,7 +108,12 @@ async fn shortcut_triggers_by_name_and_returns_to_base() {
 async fn base_clears_and_unknown_names_are_404() {
     let (dir, closed, open) = files("base");
     let outputs = Outputs::default();
-    reactions::spawn(outputs.clone(), library(closed, open, 60_000), || {});
+    let _handle = ready(reactions::spawn(
+        outputs.clone(),
+        library(closed, open, 60_000),
+        || {},
+    ))
+    .await;
     assert_eq!(
         post(&outputs, "/react/Ninguém", "localhost:39017", true).await,
         StatusCode::NOT_FOUND
@@ -139,7 +159,7 @@ async fn broken_file_keeps_last_valid_version_and_reports() {
     let outputs = Outputs::default();
     let lib = library(closed, open.clone(), 60_000);
     let id = lib.sentiments[0].id;
-    let handle = reactions::spawn(outputs.clone(), lib.clone(), || {});
+    let handle = ready(reactions::spawn(outputs.clone(), lib.clone(), || {})).await;
 
     let mut broken = lib;
     broken.sentiments[0].quiet = Some(dir.join("missing.png"));
@@ -170,7 +190,12 @@ async fn cli_reaches_the_running_server() {
     let listener = server::bind(0).await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(server::serve(listener, outputs.clone()));
-    reactions::spawn(outputs.clone(), library(closed, open, 60_000), || {});
+    let _handle = ready(reactions::spawn(
+        outputs.clone(),
+        library(closed, open, 60_000),
+        || {},
+    ))
+    .await;
 
     let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let run =
@@ -202,7 +227,7 @@ async fn heard_sound_shows_its_sentiment_as_voice() {
     let mut lib = library(closed, open, 60_000);
     lib.sentiments[0].sound = Some("risada".to_owned());
     let id = lib.sentiments[0].id;
-    let handle = reactions::spawn(outputs.clone(), lib, || {});
+    let handle = ready(reactions::spawn(outputs.clone(), lib, || {})).await;
     handle
         .commands
         .send(Command::Sound("grito".to_owned()))
@@ -224,7 +249,12 @@ async fn heard_sound_shows_its_sentiment_as_voice() {
 async fn retriggering_the_same_sentiment_changes_the_scene() {
     let (dir, closed, open) = files("retrigger");
     let outputs = Outputs::default();
-    reactions::spawn(outputs.clone(), library(closed, open, 60_000), || {});
+    let _handle = ready(reactions::spawn(
+        outputs.clone(),
+        library(closed, open, 60_000),
+        || {},
+    ))
+    .await;
     assert_eq!(
         post(&outputs, "/react/Animado", "127.0.0.1", true).await,
         StatusCode::NO_CONTENT
@@ -253,7 +283,7 @@ async fn replacing_a_file_reaches_the_page_without_retriggering() {
     let (dir, closed, open) = files("replace");
     let outputs = Outputs::default();
     let lib = library(closed.clone(), open.clone(), 60_000);
-    let handle = reactions::spawn(outputs.clone(), lib.clone(), || {});
+    let handle = ready(reactions::spawn(outputs.clone(), lib.clone(), || {})).await;
     assert_eq!(
         post(&outputs, "/react/Animado", "127.0.0.1", true).await,
         StatusCode::NO_CONTENT
