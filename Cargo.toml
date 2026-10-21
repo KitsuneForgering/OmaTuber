@@ -26,6 +26,10 @@ sound = ["dep:hound", "dep:pipewire", "dep:rustfft"]
 name = "sound-probe"
 required-features = ["sound"]
 
+[[example]]
+name = "bench_sound"
+required-features = ["sound"]
+
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 http-body-util = "0.1"
