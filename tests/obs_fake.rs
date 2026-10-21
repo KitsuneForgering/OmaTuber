@@ -633,3 +633,37 @@ async fn worker_adds_to_the_scene_on_air_and_reports_placement() {
     .await;
     assert_eq!(world.lock().unwrap().ours().len(), 1);
 }
+
+#[tokio::test]
+async fn collects_levels_for_calibration() {
+    let (port, obs_ctl, _) = fake_obs("certa").await;
+    let worker = obs::spawn(Outputs::default(), || {});
+    let mut status = worker.status.clone();
+    worker.commands.send(connect(port, "certa")).unwrap();
+    wait_for(&mut status, "connected", |s| {
+        s.connection == Connection::Connected
+    })
+    .await;
+    worker.commands.send(Command::Select(Some(MIC))).unwrap();
+    worker
+        .commands
+        .send(Command::CollectLevels(Duration::from_millis(500)))
+        .unwrap();
+    wait_for(&mut status, "collecting", |s| s.collecting).await;
+    for _ in 0..8 {
+        obs_ctl.send(Control::Meter(0.1)).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let s = wait_for(&mut status, "batch ready", |s| s.batches == 1).await;
+    assert!(!s.collecting);
+    assert!(
+        (6..=10).contains(&s.collected.len()),
+        "{} levels",
+        s.collected.len()
+    );
+    assert!(
+        s.collected.iter().all(|db| (db + 20.0).abs() < 0.1),
+        "{:?}",
+        s.collected
+    );
+}

@@ -43,6 +43,7 @@ fn base(palette: theme::Palette) -> ViewState {
         page: Default::default(),
         remember_password: false,
         scene_choice: None,
+        calibration: Default::default(),
         secret_note: None,
         library: Default::default(),
     }
@@ -77,9 +78,7 @@ fn main() {
         level_db: f32::NEG_INFINITY,
         mouth: Mouth::Closed,
         receiving: false,
-        scenes: Default::default(),
-        placement: None,
-        scene_message: None,
+        ..Default::default()
     };
     let live = |level_db: f32, mouth: Mouth| Status {
         connection: Connection::Connected,
@@ -87,9 +86,7 @@ fn main() {
         level_db,
         mouth,
         receiving: true,
-        scenes: Default::default(),
-        placement: None,
-        scene_message: None,
+        ..Default::default()
     };
     let configured = || ViewState {
         selected: Some(mic),
@@ -116,7 +113,7 @@ fn main() {
         },
         Scene {
             name: "3-live-quiet",
-            size: [1100.0, 760.0],
+            size: [1100.0, 900.0],
             status: live(-44.0, Mouth::Closed),
             state: configured(),
             images: true,
@@ -191,6 +188,19 @@ fn main() {
         scene.status.scenes = obs_scenes.clone();
         scene.status.placement = Some(("Principal".to_owned(), placement));
     }
+
+    // A finished calibration on the quiet scene.
+    scenes
+        .iter_mut()
+        .find(|s| s.name == "3-live-quiet")
+        .unwrap()
+        .state
+        .calibration = omatuber::view::Calibration::Done(Ok(omatuber::calibration::Suggestion {
+        open_db: -42.0,
+        close_db: -50.0,
+        noise_db: -53.0,
+        speech_db: -20.0,
+    }));
 
     // Library page: two sentiments (one on air by shortcut) and an object.
     let mut lib = Library::default();

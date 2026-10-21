@@ -15,6 +15,7 @@ use eframe::egui::{
 };
 use uuid::Uuid;
 
+use crate::calibration::{Problem, Suggestion};
 use crate::library_view::{FileTarget, LibraryView};
 use crate::mouth::{GateParams, Mouth};
 use crate::obs::{Connection, Status};
@@ -79,6 +80,7 @@ pub struct ViewState {
     pub remember_password: bool,
     /// Scene to add the avatar to; `None` means the one on air.
     pub scene_choice: Option<String>,
+    pub calibration: Calibration,
     /// Why remembering is unavailable or what just happened to the stored
     /// password; `None` when there is nothing to say.
     pub secret_note: Option<String>,
@@ -115,6 +117,8 @@ pub enum Action {
     ChooseScene(Option<String>),
     /// Create, link or re-show the avatar's browser source in the scene.
     AddToScene,
+    /// Begin guided calibration (silence, then speech).
+    StartCalibration,
     /// Record one 2.5 s example of this sound.
     RecordExample(String),
     RemoveLastExample(String),
@@ -126,6 +130,34 @@ pub enum Action {
 /// Examples per sound below which the editor highlights the count; mirrors
 /// `training::MIN_CLIPS`, which is only built with the `sound` feature.
 pub const MIN_TEACH_CLIPS: usize = 3;
+
+/// Guided calibration as the voice card shows it; `main` advances it as the
+/// OBS worker finishes each 3 s batch of levels.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Calibration {
+    #[default]
+    Idle,
+    Silence,
+    Speech {
+        silence: Vec<f32>,
+    },
+    Done(Result<Suggestion, Problem>),
+}
+
+impl Calibration {
+    /// Next step once a batch of levels is ready; `true` means another batch
+    /// must be gathered (the speech phase).
+    pub fn advance(self, levels: Vec<f32>) -> (Self, bool) {
+        match self {
+            Calibration::Silence => (Calibration::Speech { silence: levels }, true),
+            Calibration::Speech { silence } => (
+                Calibration::Done(crate::calibration::suggest(&silence, &levels, MIN_OPEN_DB)),
+                false,
+            ),
+            other => (other, false),
+        }
+    }
+}
 
 /// Where the preview's mouth comes from right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1275,6 +1307,7 @@ fn voice_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: &m
             }
         });
         ui.add(egui::Label::new(RichText::new(cause(s, status))).wrap());
+        calibration_ui(ui, s, status, actions);
 
         ui.horizontal(|ui| {
             let test = ui
@@ -1301,6 +1334,103 @@ fn voice_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: &m
                 );
             });
     });
+}
+
+fn calibration_ui(
+    ui: &mut egui::Ui,
+    s: &mut ViewState,
+    status: &Status,
+    actions: &mut Vec<Action>,
+) {
+    let p = s.palette;
+    match s.calibration.clone() {
+        Calibration::Idle => {
+            let ready = mode(s, status) == Mode::Live;
+            let button = ui
+                .add_enabled(ready, egui::Button::new("Calibrar sensibilidade"))
+                .on_hover_text(
+                    "3 s de silêncio e 3 s de fala; só os níveis são usados, nada é gravado",
+                )
+                .on_disabled_hover_text(
+                    "Conecte ao OBS e escolha um microfone que esteja recebendo som",
+                );
+            if button.clicked() {
+                actions.push(Action::StartCalibration);
+            }
+        }
+        Calibration::Silence => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new("1/2 · Fique em silêncio por 3 segundos…").strong());
+            });
+        }
+        Calibration::Speech { .. } => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(
+                    RichText::new("2/2 · Agora fale normalmente por 3 segundos, como numa live…")
+                        .strong(),
+                );
+            });
+        }
+        Calibration::Done(Ok(sug)) => {
+            // Plan: dB values stay out of the main screen; they are in the
+            // hover text for whoever wants them.
+            ui.add(
+                egui::Label::new(format!(
+                    "Seu silêncio e sua fala ficaram bem separados. Sugestão: sensibilidade {:.0}.",
+                    sensitivity(sug.open_db)
+                ))
+                .wrap(),
+            )
+            .on_hover_text(format!(
+                "Silêncio até {:.0} dBFS; fala em torno de {:.0} dBFS. A boca abriria em {:.0} e fecharia abaixo de {:.0} dBFS.",
+                sug.noise_db.max(FLOOR_DB),
+                sug.speech_db,
+                sug.open_db,
+                sug.close_db
+            ));
+            ui.horizontal(|ui| {
+                if ui.add(accent_button(&p, "Aplicar sugestão")).clicked() {
+                    s.params = GateParams {
+                        open_db: sug.open_db,
+                        close_db: sug.close_db,
+                        ..s.params
+                    };
+                    actions.push(Action::SetParams(s.params));
+                    s.calibration = Calibration::Idle;
+                }
+                if ui.button("Cancelar").clicked() {
+                    s.calibration = Calibration::Idle;
+                }
+            });
+        }
+        Calibration::Done(Err(problem)) => {
+            let text = match problem {
+                Problem::TooShort => {
+                    "Quase nenhum nível chegou do OBS durante a calibração. Confira se o microfone está ativo na cena atual."
+                        .to_owned()
+                }
+                Problem::NoSpeech => {
+                    "Não ouvi fala na segunda parte. Tente de novo falando no volume de uma live.".to_owned()
+                }
+                Problem::TooClose { .. } => {
+                    "Sua fala ficou muito perto do ruído do ambiente para uma sugestão confiável. \
+                     Ajuste a sensibilidade à mão, ou aproxime o microfone."
+                        .to_owned()
+                }
+            };
+            ui.add(egui::Label::new(RichText::new(text).color(p.yellow)).wrap());
+            ui.horizontal(|ui| {
+                if ui.button("Tentar de novo").clicked() {
+                    actions.push(Action::StartCalibration);
+                }
+                if ui.button("Fechar").clicked() {
+                    s.calibration = Calibration::Idle;
+                }
+            });
+        }
+    }
 }
 
 fn source_picker(

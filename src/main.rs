@@ -14,6 +14,9 @@ use omatuber::theme;
 use omatuber::view::{self, Action, FLOOR_DB, HYSTERESIS_DB, Page, SlotView, ViewState};
 use omatuber::{cli, library, reactions, secret};
 
+/// Each calibration phase (silence, then speech) gathers levels this long.
+const CALIBRATION_PHASE: Duration = Duration::from_secs(3);
+
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = cli::run(&args, server::DEFAULT_PORT) {
@@ -71,6 +74,8 @@ struct App {
     lib_rx: Receiver<LibLoaded>,
     /// Reaction triggers already seen, to notice a new one.
     seen_triggers: u64,
+    /// Calibration batches already consumed.
+    seen_batches: u64,
     last_connection: Connection,
     prefs_path: Option<PathBuf>,
     /// Last state written to disk; a save happens when the current one differs.
@@ -155,6 +160,7 @@ impl App {
                 page: Page::Avatar,
                 remember_password: false,
                 scene_choice: saved.scene.clone(),
+                calibration: Default::default(),
                 secret_note: None,
                 library: LibraryView {
                     draft: library.clone(),
@@ -171,6 +177,7 @@ impl App {
             lib_tx,
             lib_rx,
             seen_triggers: 0,
+            seen_batches: 0,
             last_connection: Connection::Idle,
             prefs_path,
             saved: saved.clone(),
@@ -370,6 +377,10 @@ impl App {
                 self.update_scene_target();
             }
             Action::AddToScene => self.send(Command::AddToScene),
+            Action::StartCalibration => {
+                self.view.calibration = view::Calibration::Silence;
+                self.send(Command::CollectLevels(CALIBRATION_PHASE));
+            }
             Action::RecordExample(_)
             | Action::RemoveLastExample(_)
             | Action::TrainSounds
@@ -659,6 +670,20 @@ impl App {
         self.last_connection = connection.clone();
     }
 
+    /// Moves guided calibration on when the worker finishes a batch.
+    fn advance_calibration(&mut self, status: &obs::Status) {
+        if status.batches == self.seen_batches {
+            return;
+        }
+        self.seen_batches = status.batches;
+        let current = std::mem::take(&mut self.view.calibration);
+        let (next, again) = current.advance(status.collected.clone());
+        self.view.calibration = next;
+        if again {
+            self.send(Command::CollectLevels(CALIBRATION_PHASE));
+        }
+    }
+
     /// Tells the OBS worker which scene the avatar is for and how to create
     /// its browser source: this app's URL, sized like the "Quieto" image.
     fn update_scene_target(&self) {
@@ -915,6 +940,7 @@ impl eframe::App for App {
             self.view.palette = palette;
         }
         let status = self.obs.status.borrow().clone();
+        self.advance_calibration(&status);
         self.follow_connection(&status.connection);
         for action in view::draw(ui, &mut self.view, &status) {
             self.handle(&ctx, action);

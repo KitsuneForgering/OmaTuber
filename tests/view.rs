@@ -28,6 +28,7 @@ fn state() -> ViewState {
         page: Default::default(),
         remember_password: false,
         scene_choice: None,
+        calibration: Default::default(),
         secret_note: None,
         library: Default::default(),
     }
@@ -51,9 +52,7 @@ fn idle() -> Status {
         level_db: f32::NEG_INFINITY,
         mouth: Mouth::Closed,
         receiving: false,
-        scenes: Default::default(),
-        placement: None,
-        scene_message: None,
+        ..Default::default()
     }
 }
 
@@ -67,9 +66,7 @@ fn live() -> Status {
         level_db: -20.0,
         mouth: Mouth::Open,
         receiving: true,
-        scenes: Default::default(),
-        placement: None,
-        scene_message: None,
+        ..Default::default()
     }
 }
 
@@ -477,5 +474,86 @@ mod scene_step {
                 .is_none()
         );
         h.get_by_label("Na cena: não verificado. Conecte ao OBS para adicionar o avatar sozinho, ou copie a URL");
+    }
+}
+
+mod calibration_flow {
+    use super::*;
+    use omatuber::view::Calibration;
+
+    fn live_on_mic() -> (Status, Uuid) {
+        let mic = Uuid::from_u128(9);
+        (live(), mic)
+    }
+
+    #[test]
+    fn needs_live_signal_to_start() {
+        let mut h = harness(idle());
+        h.get_by_label("Calibrar sensibilidade").click();
+        h.run();
+        assert!(h.state().1.is_empty(), "disabled without OBS");
+
+        let (status, mic) = live_on_mic();
+        let mut h = harness(status);
+        h.state_mut().0.selected = Some(mic);
+        h.run();
+        h.get_by_label("Calibrar sensibilidade").click();
+        h.run();
+        assert_eq!(h.state().1, [Action::StartCalibration]);
+    }
+
+    #[test]
+    fn advances_silence_then_speech_then_suggests() {
+        let silence: Vec<f32> = (0..60).map(|i| -55.0 + (i % 5) as f32 - 2.0).collect();
+        let speech: Vec<f32> = (0..60).map(|i| -20.0 + (i % 5) as f32 - 2.0).collect();
+        let (step, again) = Calibration::Silence.advance(silence.clone());
+        assert!(again, "speech phase still to gather");
+        assert_eq!(step, Calibration::Speech { silence });
+        let (step, again) = step.advance(speech);
+        assert!(!again);
+        let Calibration::Done(Ok(s)) = step else {
+            panic!("{step:?}")
+        };
+        assert_eq!((s.open_db, s.close_db), (-42.0, -50.0));
+        // A stray batch while idle changes nothing.
+        assert_eq!(
+            Calibration::Idle.advance(vec![-1.0]),
+            (Calibration::Idle, false)
+        );
+    }
+
+    #[test]
+    fn applying_the_suggestion_sets_both_thresholds() {
+        let (status, mic) = live_on_mic();
+        let mut h = harness(status);
+        let s = &mut h.state_mut().0;
+        s.selected = Some(mic);
+        s.calibration = Calibration::Done(Ok(omatuber::calibration::Suggestion {
+            open_db: -42.0,
+            close_db: -50.0,
+            noise_db: -53.0,
+            speech_db: -20.0,
+        }));
+        h.run();
+        h.get_by_label("Aplicar sugestão").click();
+        h.run();
+        let st = h.state();
+        assert_eq!(st.0.calibration, Calibration::Idle);
+        assert_eq!((st.0.params.open_db, st.0.params.close_db), (-42.0, -50.0));
+        assert_eq!(st.1, [Action::SetParams(st.0.params)]);
+    }
+
+    #[test]
+    fn problems_offer_retry_instead_of_a_guess() {
+        let (status, mic) = live_on_mic();
+        let mut h = harness(status);
+        let s = &mut h.state_mut().0;
+        s.selected = Some(mic);
+        s.calibration = Calibration::Done(Err(omatuber::calibration::Problem::NoSpeech));
+        h.run();
+        assert!(h.query_by_label("Aplicar sugestão").is_none());
+        h.get_by_label("Tentar de novo").click();
+        h.run();
+        assert_eq!(h.state().1, [Action::StartCalibration]);
     }
 }

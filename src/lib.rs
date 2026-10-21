@@ -1,4 +1,5 @@
 pub mod avatar;
+pub mod calibration;
 #[cfg(feature = "sound")]
 pub mod capture;
 pub mod cli;

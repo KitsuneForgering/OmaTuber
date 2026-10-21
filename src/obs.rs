@@ -68,6 +68,30 @@ pub struct Status {
     pub placement: Option<(String, Placement)>,
     /// Result of the last "add to scene", or why it failed.
     pub scene_message: Option<String>,
+    /// Calibration: levels are being gathered for the selected input.
+    pub collecting: bool,
+    /// Levels (dBFS) from the last finished gathering, one per meter event,
+    /// and a counter that changes when a new batch is ready.
+    pub collected: Vec<f32>,
+    pub batches: u64,
+}
+
+impl Default for Status {
+    fn default() -> Self {
+        Self {
+            connection: Connection::Idle,
+            inputs: Vec::new(),
+            level_db: f32::NEG_INFINITY,
+            mouth: Mouth::Closed,
+            receiving: false,
+            scenes: scene::Scenes::default(),
+            placement: None,
+            scene_message: None,
+            collecting: false,
+            collected: Vec::new(),
+            batches: 0,
+        }
+    }
 }
 
 pub enum Command {
@@ -88,6 +112,9 @@ pub enum Command {
     },
     /// Add the avatar to the target scene, reusing its source if present.
     AddToScene,
+    /// Gather the selected input's levels for this long (calibration). Only
+    /// levels are kept, never audio.
+    CollectLevels(Duration),
 }
 
 pub struct Handle {
@@ -99,16 +126,7 @@ pub struct Handle {
 /// every status change, e.g. to request a UI repaint.
 pub fn spawn(outputs: Outputs, notify: impl Fn() + Send + 'static) -> Handle {
     let (commands, rx) = mpsc::unbounded_channel();
-    let (status_tx, status) = watch::channel(Status {
-        connection: Connection::Idle,
-        inputs: Vec::new(),
-        level_db: f32::NEG_INFINITY,
-        mouth: Mouth::Closed,
-        receiving: false,
-        scenes: scene::Scenes::default(),
-        placement: None,
-        scene_message: None,
-    });
+    let (status_tx, status) = watch::channel(Status::default());
     tokio::spawn(Worker::new(outputs, status_tx, notify).run(rx));
     Handle { commands, status }
 }
@@ -141,6 +159,8 @@ struct Worker<N> {
     retry_at: Option<Instant>,
     retry_delay: Duration,
     scene_target: Option<(Option<String>, BrowserSettings)>,
+    /// Calibration in progress: until when, and the levels so far.
+    collect: Option<(Duration, Vec<f32>)>,
 }
 
 impl<N: Fn()> Worker<N> {
@@ -159,6 +179,7 @@ impl<N: Fn()> Worker<N> {
             retry_at: None,
             retry_delay: RETRY_MIN,
             scene_target: None,
+            collect: None,
         }
     }
 
@@ -220,6 +241,11 @@ impl<N: Fn()> Worker<N> {
                 self.refresh_scene().await;
             }
             Command::AddToScene => self.add_to_scene().await,
+            Command::CollectLevels(length) => {
+                self.collect = Some((self.now() + length, Vec::new()));
+                self.status.send_modify(|s| s.collecting = true);
+                (self.notify)();
+            }
         }
     }
 
@@ -289,6 +315,17 @@ impl<N: Fn()> Worker<N> {
 
     fn tick(&mut self) {
         let now = self.now();
+        if let Some((until, _)) = &self.collect
+            && now >= *until
+        {
+            let (_, levels) = self.collect.take().expect("checked");
+            self.status.send_modify(|s| {
+                s.collecting = false;
+                s.collected = levels;
+                s.batches += 1;
+            });
+            (self.notify)();
+        }
         if let Some(db) = self.simulate {
             self.gate.on_level(now, db);
             self.publish(db);
@@ -321,6 +358,9 @@ impl<N: Fn()> Worker<N> {
                     .as_ref()
                     .and_then(|s| s.selected_name.as_deref());
                 if let Some(db) = name.and_then(|n| selected_level(&inputs, n)) {
+                    if let Some((_, levels)) = &mut self.collect {
+                        levels.push(db);
+                    }
                     self.gate.on_level(self.now(), db);
                     self.publish(db);
                 }
