@@ -6,6 +6,7 @@
 //! clips. A window of 0.5 s, taken every 0.25 s, becomes one feature vector;
 //! windows quieter than a silence gate are skipped, not classified.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use rustfft::num_complex::Complex32;
@@ -161,6 +162,88 @@ impl Analyzer {
     }
 }
 
+/// Windows over a continuous stream, `hop_frames` frames (10 ms each) apart.
+///
+/// Each frame is analysed once and reused by every window that contains it,
+/// so a short hop costs little more than the 0.25 s one: per second of audio
+/// at most 100 frames are analysed, plus one cheap summary per window. Frames
+/// that only fall in silent windows are never analysed. A window's features
+/// are exactly what `Analyzer::window` gives for the same samples.
+pub struct Stream {
+    analyzer: Analyzer,
+    hop_frames: usize,
+    silence_db: f32,
+    /// Samples from the start of the next window on.
+    buf: Vec<f32>,
+    /// Absolute frame index where the next window starts.
+    next: usize,
+    /// Analysed frames, contiguous, starting at absolute index `first`.
+    frames: VecDeque<Frame>,
+    first: usize,
+}
+
+impl Stream {
+    pub fn new(hop_frames: usize, silence_db: f32) -> Self {
+        assert!((1..=WINDOW_FRAMES).contains(&hop_frames));
+        Self {
+            analyzer: Analyzer::new(),
+            hop_frames,
+            silence_db,
+            buf: Vec::with_capacity(2 * WINDOW_SAMPLES),
+            next: 0,
+            frames: VecDeque::with_capacity(WINDOW_FRAMES),
+            first: 0,
+        }
+    }
+
+    /// Samples between the starts of consecutive windows.
+    pub fn hop_samples(&self) -> usize {
+        self.hop_frames * HOP
+    }
+
+    pub fn extend(&mut self, samples: &[f32]) {
+        self.buf.extend_from_slice(samples);
+    }
+
+    /// Samples received but not yet behind a finished window.
+    pub fn pending(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// Forgets all audio; the next samples start a new stream. For gaps,
+    /// such as audio dropped to catch up.
+    pub fn reset(&mut self) {
+        self.buf.clear();
+        self.frames.clear();
+        self.next = 0;
+        self.first = 0;
+    }
+
+    /// The next complete window, if enough samples arrived: `Some(None)` for
+    /// silence, `Some(Some(features))` otherwise.
+    pub fn next_window(&mut self) -> Option<Option<Features>> {
+        if self.buf.len() < WINDOW_SAMPLES {
+            return None;
+        }
+        let window = &self.buf[..WINDOW_SAMPLES];
+        let features = (rms_db(window) >= self.silence_db).then(|| {
+            // Keep the frames this window shares with earlier ones (windows
+            // only move forward, so `next >= first`).
+            let keep = (self.first + self.frames.len()).saturating_sub(self.next);
+            self.frames.drain(..self.frames.len() - keep);
+            self.first = self.next;
+            for i in self.frames.len()..WINDOW_FRAMES {
+                let frame = self.analyzer.frame(&window[i * HOP..i * HOP + FRAME]);
+                self.frames.push_back(frame);
+            }
+            summarize(self.frames.make_contiguous())
+        });
+        self.next += self.hop_frames;
+        self.buf.drain(..self.hop_samples());
+        Some(features)
+    }
+}
+
 fn bin_hz(k: usize) -> f32 {
     k as f32 * SAMPLE_RATE as f32 / FFT_LEN as f32
 }
@@ -200,12 +283,20 @@ fn mel_matrix() -> Vec<[f32; BINS]> {
 fn pitch(x: &[f32]) -> Option<f32> {
     let mean = x.iter().sum::<f32>() / x.len() as f32;
     let x: Vec<f32> = x.iter().map(|v| v - mean).collect();
+    // Energy of every prefix, so each lag's two energies are a subtraction
+    // instead of two more passes over the frame (the lag loop dominates the
+    // whole analysis).
+    let mut prefix = Vec::with_capacity(x.len() + 1);
+    prefix.push(0.0_f64);
+    for v in &x {
+        prefix.push(prefix[prefix.len() - 1] + f64::from(v * v));
+    }
+    let n = x.len();
     let r: Vec<f32> = PITCH_LAGS
         .map(|lag| {
-            let (a, b) = (&x[..x.len() - lag], &x[lag..]);
+            let (a, b) = (&x[..n - lag], &x[lag..]);
             let num: f32 = a.iter().zip(b).map(|(p, q)| p * q).sum();
-            let den = (a.iter().map(|v| v * v).sum::<f32>() * b.iter().map(|v| v * v).sum::<f32>())
-                .sqrt();
+            let den = ((prefix[n - lag] * (prefix[n] - prefix[lag])).sqrt()) as f32;
             if den > 1e-9 { num / den } else { 0.0 }
         })
         .collect();
@@ -589,6 +680,32 @@ mod tests {
         let n = (2 * SAMPLE_RATE - WINDOW_SAMPLES) / WINDOW_HOP_SAMPLES + 1;
         assert_eq!(a.clip(&two_s, SILENCE_DB).len(), n);
         assert!(a.clip(&two_s[..WINDOW_SAMPLES - 1], SILENCE_DB).is_empty());
+    }
+
+    /// The live path must see exactly what training saw, whatever the hop
+    /// and however the audio is chunked, across silence and sound.
+    #[test]
+    fn stream_windows_equal_standalone_windows() {
+        let mut audio = sawtooth(180.0, SAMPLE_RATE, 0.3);
+        audio.extend(vec![0.0; SAMPLE_RATE]);
+        audio.extend(noise(SAMPLE_RATE, 4).iter().map(|v| v * 0.2));
+        let mut a = Analyzer::new();
+        for hop_frames in [1, 5, 25, WINDOW_FRAMES] {
+            let mut s = Stream::new(hop_frames, SILENCE_DB);
+            let mut got = Vec::new();
+            for chunk in audio.chunks(237) {
+                s.extend(chunk);
+                while let Some(w) = s.next_window() {
+                    got.push(w);
+                }
+            }
+            let hop = hop_frames * HOP;
+            let want: Vec<_> = (0..=(audio.len() - WINDOW_SAMPLES) / hop)
+                .map(|i| a.window(&audio[i * hop..i * hop + WINDOW_SAMPLES], SILENCE_DB))
+                .collect();
+            assert_eq!(got, want, "hop of {hop_frames} frames");
+            assert!(got.iter().any(Option::is_none) && got.iter().any(Option::is_some));
+        }
     }
 
     fn clips() -> (Vec<String>, Vec<(usize, Vec<Features>)>) {

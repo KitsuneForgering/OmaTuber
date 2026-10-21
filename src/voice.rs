@@ -13,14 +13,18 @@ use tokio::sync::{mpsc, watch};
 
 use crate::reactions::Command;
 use crate::sound::{
-    Analyzer, BACKGROUND, Detector, Model, SAMPLE_RATE, SILENCE_DB, WINDOW_HOP_SAMPLES,
-    WINDOW_SAMPLES, argmax,
+    BACKGROUND, Detector, Model, SAMPLE_RATE, SILENCE_DB, Stream, WINDOW_SAMPLES, argmax,
 };
 
-/// Probability and confirmation the plan specifies: the same class, p ≥ 0.7,
-/// in 2 consecutive windows.
+/// Windows are taken every 50 ms (5 frames). Frames are shared between
+/// windows, so this costs less CPU than the 0.25 s hop used for training,
+/// and a sound is noticed up to 200 ms sooner.
+pub const HOP_FRAMES: usize = 5;
+/// The plan's confirmation: the same class with p ≥ 0.7 in consecutive
+/// windows, here spanning 0.25 s (6 windows 50 ms apart), the same time the
+/// original 2 windows 0.25 s apart covered.
 pub const MIN_P: f32 = 0.7;
-pub const CONFIRM: usize = 2;
+pub const CONFIRM_SPAN: Duration = Duration::from_millis(250);
 /// If analysis falls behind by more than this, the oldest audio is dropped so
 /// a reaction never fires long after the sound (real-time over completeness).
 pub const MAX_BACKLOG: Duration = Duration::from_millis(500);
@@ -28,9 +32,8 @@ pub const MAX_BACKLOG: Duration = Duration::from_millis(500);
 /// Turns a stream of samples into fired classes.
 pub struct Listener {
     model: Model,
-    analyzer: Analyzer,
+    stream: Stream,
     detector: Detector,
-    buf: Vec<f32>,
     pub stats: Stats,
 }
 
@@ -48,12 +51,17 @@ pub struct Stats {
 
 impl Listener {
     pub fn new(model: Model) -> Self {
-        let detector = Detector::new(&model.classes, &BACKGROUND, MIN_P, CONFIRM);
+        Self::with_hop(model, HOP_FRAMES)
+    }
+
+    fn with_hop(model: Model, hop_frames: usize) -> Self {
+        let stream = Stream::new(hop_frames, SILENCE_DB);
+        let confirm = backlog_samples(CONFIRM_SPAN) / stream.hop_samples() + 1;
+        let detector = Detector::new(&model.classes, &BACKGROUND, MIN_P, confirm);
         Self {
             model,
-            analyzer: Analyzer::new(),
+            stream,
             detector,
-            buf: Vec::new(),
             stats: Stats::default(),
         }
     }
@@ -64,23 +72,25 @@ impl Listener {
 
     /// Adds captured samples; returns the classes that fired, in order.
     pub fn push(&mut self, samples: &[f32]) -> Vec<String> {
-        self.buf.extend_from_slice(samples);
         let max = WINDOW_SAMPLES + backlog_samples(MAX_BACKLOG);
-        if self.buf.len() > max {
-            let excess = self.buf.len() - max;
-            // Keep window alignment: drop whole hops.
-            let drop = excess.div_ceil(WINDOW_HOP_SAMPLES) * WINDOW_HOP_SAMPLES;
-            let drop = drop.min(self.buf.len());
-            self.buf.drain(..drop);
+        let samples = if self.stream.pending() + samples.len() > max {
+            // Too far behind: keep only the newest audio, as a new stream.
+            let keep = samples.len().min(max);
+            let drop = self.stream.pending() + samples.len() - keep;
             self.stats.dropped += Duration::from_secs_f64(drop as f64 / SAMPLE_RATE as f64);
-        }
+            self.stream.reset();
+            &samples[samples.len() - keep..]
+        } else {
+            samples
+        };
+        self.stream.extend(samples);
         let mut fired = Vec::new();
-        while self.buf.len() >= WINDOW_SAMPLES {
+        loop {
             let started = Instant::now();
-            let post = self
-                .analyzer
-                .window(&self.buf[..WINDOW_SAMPLES], SILENCE_DB)
-                .map(|f| self.model.posteriors(&f));
+            let Some(features) = self.stream.next_window() else {
+                break;
+            };
+            let post = features.map(|f| self.model.posteriors(&f));
             self.stats.heard = post.as_ref().map(|p| {
                 let c = argmax(p);
                 (self.model.classes[c].clone(), p[c])
@@ -90,7 +100,6 @@ impl Listener {
             }
             self.stats.last_window = started.elapsed();
             self.stats.worst_window = self.stats.worst_window.max(self.stats.last_window);
-            self.buf.drain(..WINDOW_HOP_SAMPLES);
         }
         fired
     }
@@ -197,6 +206,7 @@ fn listen(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sound::Analyzer;
 
     /// Deterministic noise in [-amp, amp].
     fn noise(n: usize, amp: f32, seed: &mut u32) -> Vec<f32> {
@@ -247,23 +257,45 @@ mod tests {
         );
     }
 
-    /// Audio between the start of a trained sound and the reaction firing,
-    /// fed in 10 ms chunks after background noise. The plan's estimate was
-    /// 0.5–1 s; this pins the design's actual figure.
+    /// Seconds from the start of a trained sound to the reaction, for each
+    /// onset 0–240 ms after a whole second of background noise (where the
+    /// windows fall relative to the sound changes the delay).
+    fn latencies(hop_frames: usize) -> Vec<f64> {
+        let model = model();
+        (0..25)
+            .map(|offset| {
+                let mut l = Listener::with_hop(model.clone(), hop_frames);
+                let mut seed = 11;
+                for c in noise(SAMPLE_RATE * 2 + offset * 160, 0.3, &mut seed).chunks(160) {
+                    l.push(c);
+                }
+                let sound = tone(SAMPLE_RATE * 3, 220.0);
+                let at = sound
+                    .chunks(160)
+                    .enumerate()
+                    .find_map(|(i, c)| (!l.push(c).is_empty()).then_some((i + 1) * 160))
+                    .expect("fires");
+                at as f64 / SAMPLE_RATE as f64
+            })
+            .collect()
+    }
+
+    /// The plan estimated 0.5–1 s; this pins the design's actual figures and
+    /// that the 50 ms hop is never slower than the 0.25 s one.
     #[test]
     fn detection_latency_from_sound_onset() {
-        let mut l = Listener::new(model());
-        let mut seed = 11;
-        l.push(&noise(SAMPLE_RATE * 2, 0.3, &mut seed));
-        let sound = tone(SAMPLE_RATE * 3, 220.0);
-        let at = sound
-            .chunks(160)
-            .enumerate()
-            .find_map(|(i, c)| (!l.push(c).is_empty()).then_some((i + 1) * 160))
-            .expect("fires");
-        let latency = at as f64 / SAMPLE_RATE as f64;
-        eprintln!("detection latency: {latency:.3} s");
-        assert!((0.5..=1.0).contains(&latency), "{latency}");
+        let stats = |v: &[f64]| {
+            let mean = v.iter().sum::<f64>() / v.len() as f64;
+            (mean, v.iter().copied().fold(0.0, f64::max))
+        };
+        let (old_mean, old_max) = stats(&latencies(25));
+        let (mean, max) = stats(&latencies(HOP_FRAMES));
+        eprintln!(
+            "detection latency, 0.25 s hop: mean {old_mean:.3} s, max {old_max:.3} s; \
+             {HOP_FRAMES}-frame hop: mean {mean:.3} s, max {max:.3} s"
+        );
+        assert!((0.5..=1.0).contains(&max), "{max}");
+        assert!(mean < old_mean && max <= old_max);
     }
 
     #[test]
@@ -284,7 +316,10 @@ mod tests {
             dropped_s > 4.0 - 1e-3 - kept as f64 / SAMPLE_RATE as f64,
             "dropped {dropped_s}"
         );
-        assert!(l.buf.len() < WINDOW_SAMPLES, "everything left was analysed");
+        assert!(
+            l.stream.pending() < WINDOW_SAMPLES,
+            "everything left was analysed"
+        );
     }
 
     #[test]
