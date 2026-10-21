@@ -35,6 +35,7 @@ struct World {
     /// (scene, item id, source name, enabled)
     items: Vec<(String, i64, String, bool)>,
     next_item: i64,
+    mic_muted: bool,
 }
 
 struct Input {
@@ -61,6 +62,7 @@ impl World {
             ],
             items: Vec::new(),
             next_item: 1,
+            mic_muted: false,
         }
     }
 
@@ -78,6 +80,8 @@ enum Control {
     Meter(f32),
     /// Close the connection, as when OBS quits.
     Drop,
+    /// The person (un)mutes the microphone in OBS's mixer.
+    Mute(bool),
 }
 
 type Shared = Arc<Mutex<World>>;
@@ -171,6 +175,14 @@ async fn session(
             cmd = control.recv() => match cmd {
                 None => return false,
                 Some(Control::Drop) => return true,
+                Some(Control::Mute(muted)) => {
+                    world.lock().unwrap().mic_muted = muted;
+                    send(&mut ws, 5, json!({
+                        "eventType": "InputMuteStateChanged",
+                        "eventIntent": 1 << 3,
+                        "eventData": { "inputName": "Mic/Aux", "inputUuid": MIC, "inputMuted": muted },
+                    })).await;
+                }
                 Some(Control::Meter(rms)) => {
                     send(&mut ws, 5, json!({
                         "eventType": "InputVolumeMeters",
@@ -226,6 +238,9 @@ fn respond(req: &Value, w: &mut World) -> (Value, Value) {
         }
         // Video and browser inputs have no volume: OBS answers with a failed status.
         "GetInputVolume" => fail(604, "The specified input does not support audio."),
+        "GetInputMute" if data["inputUuid"] == json!(MIC) => {
+            (ok, json!({ "inputMuted": w.mic_muted }))
+        }
         "GetInputSettings" => match find_input(w) {
             Some(i) => (
                 ok,
@@ -666,4 +681,24 @@ async fn collects_levels_for_calibration() {
         "{:?}",
         s.collected
     );
+}
+
+#[tokio::test]
+async fn mute_state_follows_obs() {
+    let (port, obs_ctl, world) = fake_obs("certa").await;
+    world.lock().unwrap().mic_muted = true;
+    let worker = obs::spawn(Outputs::default(), || {});
+    let mut status = worker.status.clone();
+    worker.commands.send(Command::Select(Some(MIC))).unwrap();
+    worker.commands.send(connect(port, "certa")).unwrap();
+    wait_for(&mut status, "muted at connect", |s| s.muted == Some(true)).await;
+    obs_ctl.send(Control::Mute(false)).unwrap();
+    wait_for(&mut status, "unmuted by event", |s| s.muted == Some(false)).await;
+    obs_ctl.send(Control::Mute(true)).unwrap();
+    wait_for(&mut status, "muted by event", |s| s.muted == Some(true)).await;
+    worker.commands.send(Command::Disconnect).unwrap();
+    wait_for(&mut status, "unknown when disconnected", |s| {
+        s.muted.is_none()
+    })
+    .await;
 }

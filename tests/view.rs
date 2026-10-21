@@ -557,3 +557,31 @@ mod calibration_flow {
         assert_eq!(h.state().1, [Action::StartCalibration]);
     }
 }
+
+#[test]
+fn muted_microphone_is_named_as_such() {
+    let mut s = state();
+    s.selected = Some(Uuid::from_u128(9));
+    let muted = Status {
+        level_db: f32::NEG_INFINITY,
+        mouth: Mouth::Closed,
+        muted: Some(true),
+        ..live()
+    };
+    assert!(view::cause(&s, &muted).contains("está silenciado no OBS"));
+    let not_muted = Status {
+        muted: Some(false),
+        ..muted.clone()
+    };
+    assert!(view::cause(&s, &not_muted).contains("não esteja silenciado"));
+    let unknown = Status {
+        muted: None,
+        ..muted.clone()
+    };
+    assert!(view::cause(&s, &unknown).contains("pode estar silenciado"));
+
+    let mut h = harness(muted);
+    h.state_mut().0.selected = Some(Uuid::from_u128(9));
+    h.run();
+    h.get_by_label("Microfone silenciado. Ative Mic no mixer de áudio do OBS");
+}

@@ -62,6 +62,9 @@ pub struct Status {
     /// gate's staleness window. False when OBS stopped reporting it, e.g. the
     /// source is not active in the current scene.
     pub receiving: bool,
+    /// Mute state of the selected input in OBS's mixer; `None` when unknown
+    /// (not connected, nothing selected, or OBS did not answer).
+    pub muted: Option<bool>,
     /// Scenes in OBS, empty until connected.
     pub scenes: scene::Scenes,
     /// Scene the avatar is meant for and our source's state there.
@@ -84,6 +87,7 @@ impl Default for Status {
             level_db: f32::NEG_INFINITY,
             mouth: Mouth::Closed,
             receiving: false,
+            muted: None,
             scenes: scene::Scenes::default(),
             placement: None,
             scene_message: None,
@@ -196,6 +200,7 @@ impl<N: Fn()> Worker<N> {
                 event = next_event(&mut self.session) => self.event(event).await,
                 result = join(&mut self.connecting) => {
                     self.connected(result);
+                    self.refresh_muted().await;
                     self.refresh_scene().await;
                 }
                 _ = sleep_until_opt(self.retry_at) => {
@@ -230,6 +235,7 @@ impl<N: Fn()> Worker<N> {
                 if let Some(session) = &mut self.session {
                     session.selected_name = name;
                 }
+                self.refresh_muted().await;
             }
             Command::SetParams(params) => self.gate.set_params(params),
             Command::Simulate(level) => {
@@ -247,6 +253,20 @@ impl<N: Fn()> Worker<N> {
                 (self.notify)();
             }
         }
+    }
+
+    async fn refresh_muted(&mut self) {
+        let muted = match (&self.session, self.selected) {
+            (Some(session), Some(uuid)) => session
+                .client
+                .inputs()
+                .muted(InputId::Uuid(uuid))
+                .await
+                .ok(),
+            _ => None,
+        };
+        self.status.send_modify(|s| s.muted = muted);
+        (self.notify)();
     }
 
     /// The target scene: the chosen one if it still exists, else the one on air.
@@ -371,6 +391,10 @@ impl<N: Fn()> Worker<N> {
                 self.refresh_inputs().await;
                 self.refresh_scene().await;
             }
+            Event::InputMuteStateChanged { id, muted } if Some(id.uuid) == self.selected => {
+                self.status.send_modify(|s| s.muted = Some(muted));
+                (self.notify)();
+            }
             Event::SceneItemCreated { .. }
             | Event::SceneItemRemoved { .. }
             | Event::SceneItemEnableStateChanged { .. }
@@ -441,7 +465,10 @@ impl<N: Fn()> Worker<N> {
         self.session = None;
         self.retry_at = None;
         self.gate.reset();
-        self.status.send_modify(|s| s.level_db = f32::NEG_INFINITY);
+        self.status.send_modify(|s| {
+            s.level_db = f32::NEG_INFINITY;
+            s.muted = None;
+        });
     }
 
     fn set_connection(&mut self, connection: Connection) {

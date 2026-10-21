@@ -215,6 +215,12 @@ pub fn cause(s: &ViewState, status: &Status) -> String {
                 "Nenhum som chega de {name}. A fonte precisa estar ativa na cena atual do OBS."
             ),
         },
+        Mode::Live if status.muted == Some(true) => {
+            "Seu microfone está silenciado no OBS. Ative o som dele no mixer de áudio do OBS.".to_owned()
+        }
+        Mode::Live if status.level_db == f32::NEG_INFINITY && status.muted == Some(false) => {
+            "Silêncio total, embora o microfone não esteja silenciado no OBS. Confira o dispositivo de entrada dele.".to_owned()
+        }
         Mode::Live if status.level_db == f32::NEG_INFINITY => {
             "Silêncio total. O microfone pode estar silenciado no OBS.".to_owned()
         }
@@ -851,6 +857,12 @@ fn checklist_card(
             (Some(_), Some(n)) if !connected => {
                 (Step::Waiting, n.to_owned(), "Aguardando o OBS".to_owned())
             }
+            // Mute is the most actionable cause, so it comes before the rest.
+            (Some(_), Some(n)) if status.muted == Some(true) => (
+                Step::Problem,
+                "Microfone silenciado".to_owned(),
+                format!("Ative {n} no mixer de áudio do OBS"),
+            ),
             (Some(_), Some(n)) if !status.receiving => (
                 Step::Problem,
                 "Sem sinal desta fonte".to_owned(),
@@ -859,7 +871,11 @@ fn checklist_card(
             (Some(_), Some(n)) if status.level_db == f32::NEG_INFINITY => (
                 Step::Problem,
                 "Microfone em silêncio total".to_owned(),
-                format!("{n} pode estar silenciado no OBS"),
+                if status.muted == Some(false) {
+                    format!("{n} não está silenciado; confira o dispositivo de entrada")
+                } else {
+                    format!("{n} pode estar silenciado no OBS")
+                },
             ),
             (Some(_), Some(n)) => (
                 Step::Done,
@@ -1271,13 +1287,16 @@ fn voice_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: &m
         let heading = ui.label(RichText::new("Sua voz").size(18.0).strong());
         ui.horizontal(|ui| {
             source_picker(ui, s, status, actions, heading.id);
-            let level = if mode(s, status) == Mode::Live && status.level_db > FLOOR_DB {
-                format!("{:.0} dB", status.level_db)
+            let muted = status.connection == Connection::Connected && status.muted == Some(true);
+            let (level, color) = if muted {
+                ("silenciado no OBS".to_owned(), p.yellow)
+            } else if mode(s, status) == Mode::Live && status.level_db > FLOOR_DB {
+                (format!("{:.0} dB", status.level_db), p.muted)
             } else {
-                "—".to_owned()
+                ("—".to_owned(), p.muted)
             };
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(level).color(p.muted));
+                ui.label(RichText::new(level).color(color));
             });
         });
 
