@@ -4,7 +4,7 @@
 
 Criar um aplicativo de PNGTuber para Omarchy Linux que use o volume de uma fonte de áudio do OBS Studio para alternar imagens transparentes. O aplicativo configura e acompanha o avatar; uma fonte de navegador do OBS desenha o resultado na cena.
 
-O primeiro resultado utilizável é uma gravação no OBS em que dois PNGs, com a boca fechada e aberta, alternam quando a pessoa fala. A configuração deve ser feita no aplicativo, sem acesso direto da página do avatar ao microfone ou à senha do OBS. Uma pessoa que nunca montou uma cena no OBS deve conseguir chegar a esse resultado seguindo as orientações da própria interface.
+O primeiro resultado utilizável é uma gravação no OBS em que dois PNGs, com a boca fechada e aberta, alternam quando a pessoa fala. A evolução planejada aceita PNG, APNG e GIF em estados, sentimentos e objetos, com alterações aplicadas durante a transmissão. A configuração deve ser feita no aplicativo, sem acesso direto da página do avatar ao microfone ou à senha do OBS. Uma pessoa que nunca montou uma cena no OBS deve conseguir chegar ao primeiro resultado seguindo as orientações da própria interface.
 
 ## Decisões técnicas
 
@@ -41,8 +41,27 @@ Microfone → fonte de áudio do OBS → obs-websocket
 
 - O servidor do OmaTuber escuta apenas no loopback. A porta precisa ser estável para a fonte do OBS continuar funcionando após reiniciar o aplicativo; se estiver ocupada, o aplicativo deve mostrar um erro claro antes de indicar uma URL válida.
 - A página não recebe a senha do OBS. Oferecer **Lembrar neste computador** usando um serviço de segredos do Linux, se disponível; nunca gravar a senha no arquivo de preferências ou na URL. Se o serviço não estiver disponível, explicar que a senha será solicitada novamente na próxima sessão. A crate [`keyring`](https://docs.rs/keyring/latest/keyring/v1/index.html) é uma candidata a verificar na implementação.
-- O servidor entrega somente os dois PNGs escolhidos. Ao selecioná-los, o aplicativo verifica se são PNGs legíveis e impõe limites de tamanho e dimensões para evitar arquivos acidentais enormes.
+- Na versão 0.1, o servidor entrega somente os dois PNGs escolhidos. Ao selecioná-los, o aplicativo verifica se são PNGs legíveis e impõe limites de tamanho e dimensões para evitar arquivos acidentais enormes. A expansão para APNG, GIF e biblioteca de variantes mantém rotas controladas e acrescenta limites por animação.
 - Preferências sem segredo, como caminhos dos PNGs e sensibilidade, podem ser guardadas na pasta de configuração do usuário. A gravação deve ser atômica para não corromper as preferências se o processo terminar durante a escrita.
+
+## Direção de produto: feito para o Omarchy
+
+O OmaTuber deve entregar uma promessa simples: **escolher um avatar, ver a voz movê-lo e colocá-lo numa cena do OBS**. A referência ao estilo de produto da Apple é a disciplina de propósito, simplicidade, resposta clara e cuidado com os detalhes descrita nas [Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/design-principles/). A referência de plataforma é o próprio Omarchy: padrões úteis desde o primeiro uso, visual integrado ao tema e liberdade para ajustar o resultado, conforme sua [apresentação oficial](https://omarchy.org/) e seu [manual](https://omarchy.org/manual/coming-from-mac-or-windows/).
+
+| Princípio | Decisão para o OmaTuber | Como verificar |
+| --- | --- | --- |
+| Começar pelo resultado | Abrir diretamente na prévia, com um avatar de exemplo utilizável. A ação principal em cada momento é a próxima necessária para chegar à cena; instruções aparecem junto do controle a que se referem. | Com o OBS fechado e sem PNGs próprios, a pessoa consegue testar a boca na primeira abertura. |
+| Padrões que funcionam e podem ser alterados | Sugerir tamanho da fonte, sensibilidade e disposição inicial; permitir trocar imagens, microfone, cena e ajustes sem refazer o fluxo. Salvar escolhas locais e restaurá-las na próxima abertura. | A pessoa conclui o primeiro uso com os padrões e depois altera cada escolha sem perder a fonte já criada. |
+| Estado sempre observável | Palco, miniatura ativa, medidor, modo da prévia e estado da cena vêm do mesmo estado observado. Cada falha conhecida mostra causa, consequência e uma ação de reparo perto de onde ocorreu. | Em silêncio, fala, teste manual, mudo, desconexão e fonte oculta, a pessoa consegue dizer qual imagem está em uso e se ela aparece no OBS. |
+| Complexidade sob demanda | Manter a tela principal focada em avatar, voz e cena. Porta, senha, dBFS e diagnóstico técnico aparecem ao conectar, reparar ou abrir **Ajustes avançados**. O percurso guiado é retomável e não prende a pessoa antes da prévia. | Quem já configurou o app chega à prévia sem repetir etapas; quem precisa reparar uma conexão encontra o controle relevante em um passo. |
+| Integração com a mesa de trabalho | Usar a paleta ativa do Omarchy, com contraste e estados legíveis também nos temas claros; acompanhar a troca de tema durante a sessão. Respeitar janelas lado a lado do Hyprland, teclado e foco visível. Instalar um lançador `.desktop` com ícone e nome pesquisável no menu de aplicativos. | Alternar entre temas claro e escuro e redimensionar a janela enquanto o app está aberto; confirmar que nenhuma ação ou texto some e que o app abre pelo menu. |
+| Controle e confiança | Processar áudio e imagens localmente, explicar quando a detecção de som usa o microfone e permitir desligá-la. A ação **Adicionar avatar ao OBS** mostra cena e fonte antes de criar ou reutilizar algo; repetir a ação não duplica fontes. | Inspecionar a cena antes e depois de repetir a ação; confirmar que o app não grava áudio nem guarda a senha em preferências. |
+
+A aparência deve dar destaque ao avatar e à ação atual: tipografia legível, poucos níveis de hierarquia, espaçamento consistente e movimento apenas para indicar mudança de estado. O tema do Omarchy fornece cores; a identidade do OmaTuber vem da prévia e dos controles próprios do produto. O [manual de temas do Omarchy](https://omarchy.org/manual/making-your-own-theme/) descreve a paleta que pode ser usada para integrar aplicativos. A leitura de `colors.toml` já existe no código, mas acontece apenas na abertura; atualização em tempo real, temas claros e contraste ainda precisam de verificação.
+
+**Comportamento da janela durante a transmissão:** minimizar ou trocar de workspace mantém o avatar funcionando no OBS. Fechar a janela encerra o aplicativo e o servidor local, seguindo a [convenção de janelas do Omarchy](https://omarchy.org/manual/coming-from-mac-or-windows/). A interface deve dizer **Mantenha o OmaTuber aberto durante a transmissão; pode minimizá-lo** antes da primeira adição à cena. Ao reabrir o aplicativo, a fonte de navegador deve voltar a receber o avatar sem refazer a cena; a interface mostra o progresso da reconexão.
+
+Esta direção estabelece critérios para a implementação e a revisão visual; não declara que a interface atual já os cumpre. Antes de adicionar reações e classificação de som à tela principal, concluir e observar o fluxo básico com usuários. Recursos posteriores entram onde resolvem uma tarefa comprovada, preservando o caminho curto até a primeira cena.
 
 ## Experiência de quem está começando
 
@@ -113,7 +132,7 @@ Além da gravação técnica, observar pelo menos três pessoas com pouca experi
 
 ## Reações e detecção do tipo de som (após a versão 0.1)
 
-Decisão de 20 de outubro de 2026: além de abrir e fechar a boca, o avatar terá reações (rindo, surpreso, irritado, cansado, dormindo) em PNG ou APNG, disparadas pelo tipo de som e não só pelo volume. O medidor do OBS entrega apenas níveis; distinguir risada de batida na mesa exige ler o áudio. Essa é a exceção prevista no risco do medidor: a boca continua usando `InputVolumeMeters`, e só a detecção de som lê o microfone pelo PipeWire.
+Decisão de 20 de outubro de 2026: além de abrir e fechar a boca, o avatar terá reações (rindo, surpreso, irritado, cansado, dormindo) em PNG, APNG ou GIF, disparadas pelo tipo de som e não só pelo volume. O medidor do OBS entrega apenas níveis; distinguir risada de batida na mesa exige ler o áudio. Essa é a exceção prevista no risco do medidor: a boca continua usando `InputVolumeMeters`, e só a detecção de som lê o microfone pelo PipeWire.
 
 ### Organização das imagens
 
@@ -121,11 +140,29 @@ Decisão de 20 de outubro de 2026: além de abrir e fechar a boca, o avatar ter�
 | --- | --- | --- |
 | Base | Boca × olhos; visível quando nada mais toca | Quieto, Falando, Piscando, Falando + piscando |
 | Base alternativa | Outro conjunto completo, com animação de entrada | Café, com a sequência de beber |
-| Reações | Substituem o avatar por um tempo | Rindo, Surpreso, Irritado, Cansado, Dormindo, Sarcástico, Focado |
-| Efeitos | APNGs fora do avatar, em pontos de overlay | !, ?, Zzz, marca de raiva, brilho |
+| Sentimentos e reações | Trocam a expressão ou substituem o avatar por um tempo | Rindo, Surpreso, Irritado, Cansado, Dormindo, Sarcástico, Focado |
+| Objetos e efeitos | Aparecem como camadas presas ao avatar ou em pontos de overlay | Caneca, óculos, !, ?, Zzz, brilho |
 | Roupas | Bases alternativas, opcionais | Moletom, camisa |
 
-Cada reação define gatilho, destino (o avatar ou um ponto de overlay), prioridade, comportamento ao terminar (voltar à base, repetir enquanto a condição durar ou ficar até o próximo atalho) e um efeito opcional que toca junto. Empates de prioridade favorecem a reação mais recente. Toda reação também responde a `omatuber reagir <nome>`, para ser associada a um `bind` do Hyprland. Cada ponto de overlay é uma fonte de navegador com rota fixa (`/overlay/<ponto>`), posicionada pela pessoa no OBS. Repetir uma reação precisa reiniciar o APNG desde o primeiro quadro.
+Cada reação define gatilho, destino, prioridade, comportamento ao terminar (voltar à base, repetir enquanto a condição durar ou ficar até o próximo atalho) e um objeto ou efeito opcional que toca junto. Empates de prioridade favorecem a reação mais recente. Toda reação também responde a `omatuber reagir <nome>`, para ser associada a um `bind` do Hyprland. Objetos presos ao avatar aparecem na mesma fonte de navegador; pontos de overlay que precisam ser posicionados separadamente usam uma fonte adicional com rota estável (`/overlay/<ponto>`), criada uma vez. Repetir uma reação precisa reiniciar seu APNG ou GIF desde o primeiro quadro.
+
+### Variações editáveis durante o uso
+
+Tratar **sentimento** como o nome de uma expressão escolhida pela pessoa (por exemplo, **Animado**) e **objeto** como uma camada visual (por exemplo, **Caneca**). Um mesmo item pode ter variantes com imagens diferentes, como caneca cheia/vazia ou animado quieto/falando. Cada variante tem um identificador estável, nome, arquivo, posição/escala, regra de repetição e condições de entrada/saída. A pessoa pode criar, duplicar, renomear, substituir, desativar e remover itens na biblioteca, testar a combinação na prévia e aplicar a mudança sem reiniciar o app. Um item ausente ou inválido mantém a última versão válida em uso e mostra o erro no editor.
+
+Os gatilhos são independentes das imagens: atalho ou botão manual, duração/silêncio e classe de som treinada localmente. Treinar uma classe de áudio significa associar **um som demonstrado pela pessoa** a uma reação; o classificador não deve afirmar que deduziu o sentimento real da pessoa nem que reconheceu visualmente um objeto. Objetos sem assinatura sonora confiável continuam acionáveis manualmente. A interface mostra **Acionado por voz**, **Atalho** ou **Teste** junto da variação ativa e permite desativar cada gatilho.
+
+Ao adicionar ou corrigir exemplos de áudio, treinar um novo modelo em segundo plano, avaliá-lo contra exemplos guardados e trocar o modelo ativo apenas se o treino terminar e a pessoa aceitar o resultado. Durante o treino, o avatar e o modelo anterior continuam funcionando. Classes novas precisam de exemplos positivos e da classe `outros`; quando faltarem exemplos ou houver muita confusão, sugerir o gatilho manual e deixar a classe sem disparo automático. Guardar exemplos e configuração localmente, com IDs independentes dos nomes exibidos; salvar mudanças de forma atômica e permitir desfazer uma edição ainda não aplicada.
+
+O estado publicado pelo OmaTuber inclui base, sentimento, objetos ativos, variantes e uma revisão de configuração. A prévia e as fontes de navegador consomem essa mesma composição. Uma mudança de arquivo, posição, regra ou modelo aplicada no editor publica uma nova revisão por SSE e aparece na cena existente sem recriar a fonte do OBS. Se um arquivo for editado fora do app, oferecer **Recarregar arquivo**; detecção automática de alterações pode ser adicionada depois, desde que nunca exponha um arquivo parcialmente escrito. Prioridade, exclusão mútua e retorno à base são resolvidos antes do envio, para que a prévia e o OBS mostrem a mesma combinação.
+
+### PNG, APNG e GIF
+
+Aceitar os três formatos tanto nos estados Quieto/Falando quanto nas variantes, reações e objetos. Identificar o formato pelos bytes, distinguir PNG estático de APNG e validar todos os quadros, duração, dimensões, quantidade de quadros e custo de memória antes de aplicar uma imagem. A prévia precisa reproduzir a animação com tempo, transparência e regra de repetição equivalentes aos da página do OBS; decodificar só o primeiro quadro serve apenas para miniatura. Arquivos animados recebem limite próprio de recursos, além do limite atual de 16 MiB por arquivo e 4096 px por lado, a definir com testes de uso real.
+
+Servir os bytes validados com tipo correto (`image/png`, `image/apng` ou `image/gif`) por rotas baseadas em IDs conhecidos pelo app; nunca aceitar um caminho arbitrário vindo da URL. Usar URL com revisão para carregar uma substituição sem cache antigo. Para uma reação que deve começar do início, criar uma nova instância da imagem ou trocar sua URL a cada disparo; apenas ocultar e mostrar o mesmo elemento pode deixar a animação no meio. Base animada pode repetir continuamente; uma reação de execução única volta à base ao terminar, segundo a duração validada. O [GIF oferece transparência limitada a pixels inteiramente transparentes](https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Formats/Image_types), então a interface pode recomendar APNG quando o contorno ficar serrilhado.
+
+A [fonte de navegador do OBS](https://obsproject.com/kb/browser-source) usa CEF, aceita URL local e página transparente; isso sustenta a arquitetura, mas a reprodução exata de APNG/GIF, descarte de quadros e reinício da animação ainda precisam ser medidos no OBS instalado. A crate [`image` expõe decodificadores de animação para APNG e GIF](https://docs.rs/image/latest/image/trait.AnimationDecoder.html), com a feature `gif` necessária para GIF; a implementação atual usa apenas PNG estático. Testar a página no OBS com as opções **Desligar fonte quando não visível** e **Atualizar navegador quando cena se torna ativa** em ambas as posições, pois podem reiniciar a página e a animação.
 
 ### Detecção
 
@@ -145,6 +182,13 @@ Comparação: YAMNet, rodando os mesmos clipes por `tools/yamnet/compare.py`. De
 
 Gravar, com consentimento e só localmente, alguns minutos da própria pessoa falando, rindo, arfando, gritando e suspirando, mais ruídos comuns (teclado, batidas, música de fundo). Para cada som, medir em quantos trechos o modelo acerta e quantos disparos falsos ocorrem em 10 minutos de fala comum. **Avançar quando** risada e grito forem reconhecidos na maioria dos casos sem disparos falsos frequentes; caso contrário, manter essas reações por atalho e rever o modelo.
 
+### Entrega das variações após a versão 0.1
+
+1. Implementar carregamento e prévia animada de PNG, APNG e GIF, mantendo os dois estados básicos e a URL atual da fonte. Validar transparência, duração e reinício em gravação do OBS antes de habilitar os formatos animados na interface principal.
+2. Introduzir biblioteca local de sentimentos e objetos, composição por camadas e edição ao vivo. Confirmar que trocar um arquivo ou posição modifica a cena já aberta sem duplicar fontes ou exigir atualização manual no OBS.
+3. Integrar o treinamento local ao editor, com exemplos por classe, avaliação visível, aceitação do novo modelo e troca sem interromper a cena. Testar acréscimo, correção e remoção de uma classe enquanto o avatar está no OBS.
+4. Validar juntos prévia, OBS, atalhos e detecção para combinações concorrentes, cena oculta/reativada, reconexão do SSE e reinício do aplicativo. Concluir quando uma pessoa conseguir criar uma variação de sentimento e um objeto, ligá-los a gatilhos e alterá-los durante uma gravação sem refazer a cena.
+
 ## Etapas e critérios de conclusão
 
 ### 1. Prova da integração com OBS
@@ -159,6 +203,8 @@ Gravar, com consentimento e só localmente, alguns minutos da própria pessoa fa
 - Criar a janela com `eframe`, escolha de dois PNGs, prévia, sensibilidade e mensagens de erro compreensíveis. Acrescentar o fluxo inicial em etapas, um avatar de exemplo com licença definida e os estados visuais do [mockup](ui-mockup.svg).
 - Implementar a máquina de estados separada da interface, com testes para silêncio, fala perto do limiar, oscilações e perda da fonte.
 - Fazer os indicadores de modo, miniatura ativa, PNG no palco, medidor e texto de causa consumirem o mesmo estado observado pela interface. O teste manual deve declarar que afeta somente a prévia.
+- Completar a integração visual com o Omarchy: reagir à troca de tema, verificar contraste nos temas claro e escuro e manter a tela utilizável em janela estreita e com navegação por teclado.
+- Incluir no empacotamento um arquivo `.desktop` e um ícone próprios para abrir o app pelo menu do Omarchy.
 - **Avançar quando:** imagens e estado mudarem corretamente na prévia, inclusive no modo de simulação, o primeiro uso puder começar com o OBS fechado e nenhuma indicação **AO VIVO** permanecer após perda de conexão.
 
 ### 3. Fonte de navegador
@@ -174,6 +220,7 @@ Gravar, com consentimento e só localmente, alguns minutos da própria pessoa fa
 - Conferir que 30 segundos de silêncio não produzam aberturas falsas e que a fonte se recupere após reiniciar o aplicativo.
 - Conferir visualmente as combinações da tabela **Estados visuais e recuperação**. Em especial, ocultar a fonte no OBS enquanto a voz continua ativa: a prévia deve continuar reagindo, e o estado **Visível na cena** deve desaparecer.
 - Executar as tarefas de primeiro uso e reparo com iniciantes, conforme a seção de validação da experiência; revisar os pontos de hesitação antes de considerar a interface pronta.
+- Conferir o percurso pelo lançador do Omarchy, a troca de tema com o app aberto, a continuidade da fonte ao minimizar e a perda da fonte ao encerrar o app. A explicação sobre manter o aplicativo aberto deve aparecer antes de adicionar a fonte à cena.
 - **Concluir a versão 0.1 quando:** a gravação mostrar transparência correta, resposta estável à fala e recuperação de uma desconexão sem refazer a configuração da cena, e o fluxo guiado permitir colocar o avatar no OBS sem recorrer a instruções externas.
 
 ## Riscos que podem mudar o plano
@@ -186,6 +233,8 @@ Gravar, com consentimento e só localmente, alguns minutos da própria pessoa fa
 | O aplicativo fecha e a fonte perde a URL | Reiniciar o aplicativo com a fonte já configurada no OBS | Manter porta estável e reconexão automática; mostrar estado de espera na interface. |
 | A criação automática da fonte falha ou cria duplicatas | Executar a ação duas vezes e repetir após renomear ou trocar de cena | Detectar fontes associadas, oferecer reutilização e manter a opção de adição manual. |
 | O classificador de som erra com a voz da pessoa ou dispara com ruídos | Medir acertos e disparos falsos em gravações próprias, conforme a prova da detecção | Ajustar a confiança mínima por som; deixar a reação apenas por atalho se não houver ajuste aceitável. |
+| APNG ou GIF toca em tempo diferente na prévia e no OBS, ou reinicia em momento errado | Gravar disparos repetidos, troca de cena e edição de arquivo nos três formatos | Corrigir a lógica de quadros e de reinício; manter o formato fora da interface principal até a gravação confirmar o comportamento. |
+| Uma edição ao vivo deixa prévia e OBS com versões diferentes | Trocar imagens, objetos e modelo durante uma gravação e interromper uma gravação de arquivo no meio | Publicar revisões completas e validadas; conservar a revisão anterior quando a nova falhar. |
 | O fluxo parece claro para quem já conhece OBS, mas trava um iniciante | Observar as quatro tarefas com pessoas pouco experientes | Reescrever instruções e mudar a ordem das ações nos pontos em que houver hesitação. |
 
 ## Estado da validação
@@ -253,3 +302,7 @@ Verificado: 9 testes novos (filtros mel, porta de silêncio, altura de voz numa 
 Regras do plano agora no código: um único `Mode` (TESTE MANUAL, AO VIVO, SEM SINAL, SEM OBS) alimenta selo, palco, miniatura ativa e frase de causa. **AO VIVO** exige conexão, fonte existente na lista do OBS e níveis recentes (`Status::receiving`, novo, vindo da tarefa do OBS); perder a conexão leva a **SEM OBS** e à boca fechada. O teste manual deixou de enviar `Simulate` ao OBS: só muda a prévia, como o plano pede. A cena ainda não é consultada, por isso o item **Cena** mostra **não verificado** e nada afirma **Tudo pronto**. Avatar de exemplo (`src/example.rs`): raposa desenhada em código, com bordas suavizadas, gravada em `~/.local/share/omatuber/example/` e carregada como PNG comum; licença do próprio projeto.
 
 As capturas fora da tela (`cargo run --example render_view`, 7 cenas) mostraram e permitiram corrigir: conteúdo da coluna esquerda disposto na horizontal (`allocate_ui` herdava o layout de `horizontal_top`); miniaturas por cima do palco no primeiro uso (`scope_builder` movia o cursor; trocado por `new_child`). Os testes de estado acharam AO VIVO com fonte salva inexistente; corrigido. Verificado: 59 testes (68 com `sound`), 10 de interface. Não verificado: janela real, arrastar arquivo no Wayland, teste segurado pelo mouse e os estados com OBS real.
+
+**2026-10-20, direção de produto.** Registrados os princípios de integração com o Omarchy e de clareza de interface inspirados nas Human Interface Guidelines da Apple. São critérios para o trabalho seguinte, sem nova implementação ou validação do aplicativo nesta revisão.
+
+**2026-10-20, expansão planejada de variações e formatos.** Especificadas variantes editáveis de sentimentos e objetos, treinamento local com troca segura do modelo, atualização da fonte de navegador durante a transmissão e suporte planejado a PNG, APNG e GIF. O código atual continua limitado aos dois PNGs estáticos; esta revisão é apenas do plano.
