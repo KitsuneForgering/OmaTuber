@@ -3240,6 +3240,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "cc",
  "eframe",
  "egui_kittest",
  "futures-util",
@@ -3247,8 +3248,10 @@ dependencies = [
  "http-body-util",
  "image",
  "keyring-core",
+ "libc",
  "obws",
  "pipewire",
+ "pkg-config",
  "png",
  "rfd",
  "rustfft",

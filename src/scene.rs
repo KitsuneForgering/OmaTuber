@@ -14,7 +14,16 @@ use obws::requests::sources::SourceId;
 use serde::{Deserialize, Serialize};
 
 pub const KIND: &str = "browser_source";
+pub const NATIVE_KIND: &str = "omatuber_dmabuf";
 pub const NAME: &str = "OmaTuber";
+
+pub(crate) fn source_kind() -> &'static str {
+    #[cfg(feature = "dmabuf")]
+    if crate::dmabuf::enabled() {
+        return NATIVE_KIND;
+    }
+    KIND
+}
 /// The browser source never needs to be taller than a 1080p canvas.
 pub const MAX_HEIGHT: u32 = 1080;
 
@@ -74,7 +83,13 @@ pub async fn scenes(client: &Client) -> obws::error::Result<Scenes> {
 /// Names of browser sources showing `url`.
 pub async fn ours(client: &Client, url: &str) -> obws::error::Result<Vec<String>> {
     let mut found = Vec::new();
-    for input in client.inputs().list(Some(KIND)).await? {
+    for input in client.inputs().list(Some(source_kind())).await? {
+        // Native sources share this user's one endpoint, including ones made
+        // by hand without a URL marker.
+        if input.kind == NATIVE_KIND {
+            found.push(input.id.name);
+            continue;
+        }
         let settings = client
             .inputs()
             .settings::<serde_json::Value>(InputId::Uuid(input.id.uuid))
@@ -86,34 +101,75 @@ pub async fn ours(client: &Client, url: &str) -> obws::error::Result<Vec<String>
     Ok(found)
 }
 
-/// Our scene item in `scene`, as (item id, source name), if any.
+struct Found {
+    name: String,
+    // Ancestor groups/scenes followed by the avatar item itself.
+    path: Vec<(String, i64)>,
+    visible: bool,
+}
+
 async fn item_in(
     client: &Client,
     scene: &str,
     ours: &[String],
-) -> obws::error::Result<Option<(i64, String)>> {
-    let items = client.scene_items().list(SceneId::Name(scene)).await?;
-    Ok(items
-        .into_iter()
-        .find(|i| ours.contains(&i.source_name))
-        .map(|i| (i.id, i.source_name)))
+) -> obws::error::Result<Option<Found>> {
+    let mut pending = vec![(scene.to_owned(), false, Vec::new(), true)];
+    let mut seen = std::collections::HashSet::new();
+    let mut hidden = None;
+    while let Some((container, group, path, visible)) = pending.pop() {
+        // The same nested scene can occur through both hidden and visible paths.
+        if !seen.insert((container.clone(), visible)) {
+            continue;
+        }
+        let items = if group {
+            client
+                .scene_items()
+                .list_group(SceneId::Name(&container))
+                .await?
+        } else {
+            client.scene_items().list(SceneId::Name(&container)).await?
+        };
+        for item in items {
+            let ours = ours.contains(&item.source_name);
+            let nested = item.source_type == obws::responses::scene_items::SourceType::Scene;
+            if !ours && !nested {
+                continue;
+            }
+            let enabled = client
+                .scene_items()
+                .enabled(SceneId::Name(&container), item.id)
+                .await?;
+            let mut path = path.clone();
+            path.push((container.clone(), item.id));
+            if ours {
+                let found = Found {
+                    name: item.source_name,
+                    path,
+                    visible: visible && enabled,
+                };
+                if found.visible {
+                    return Ok(Some(found));
+                }
+                hidden.get_or_insert(found);
+            } else {
+                pending.push((
+                    item.source_name,
+                    item.is_group.unwrap_or(false),
+                    path,
+                    visible && enabled,
+                ));
+            }
+        }
+    }
+    Ok(hidden)
 }
 
 pub async fn placement(client: &Client, scene: &str, url: &str) -> obws::error::Result<Placement> {
     let ours = ours(client, url).await?;
     Ok(match item_in(client, scene, &ours).await? {
         None => Placement::NotAdded,
-        Some((id, _)) => {
-            if client
-                .scene_items()
-                .enabled(SceneId::Name(scene), id)
-                .await?
-            {
-                Placement::Visible
-            } else {
-                Placement::Hidden
-            }
-        }
+        Some(found) if found.visible => Placement::Visible,
+        Some(_) => Placement::Hidden,
     })
 }
 
@@ -125,20 +181,31 @@ pub async fn add(
     settings: &BrowserSettings,
 ) -> obws::error::Result<Added> {
     let ours = ours(client, &settings.url).await?;
-    if let Some((id, name)) = item_in(client, scene, &ours).await? {
-        let scene_id = SceneId::Name(scene);
-        let was_hidden = !client.scene_items().enabled(scene_id, id).await?;
-        if was_hidden {
-            client
-                .scene_items()
-                .set_enabled(SetEnabled {
-                    scene: scene_id,
-                    item_id: id,
-                    enabled: true,
-                })
-                .await?;
+    if let Some(found) = item_in(client, scene, &ours).await? {
+        if !found.visible {
+            // Explicit "show" also opens hidden ancestor containers; never
+            // create a second avatar because the existing one is nested.
+            for (container, id) in &found.path {
+                if !client
+                    .scene_items()
+                    .enabled(SceneId::Name(container), *id)
+                    .await?
+                {
+                    client
+                        .scene_items()
+                        .set_enabled(SetEnabled {
+                            scene: SceneId::Name(container),
+                            item_id: *id,
+                            enabled: true,
+                        })
+                        .await?;
+                }
+            }
         }
-        return Ok(Added::Reused { name, was_hidden });
+        return Ok(Added::Reused {
+            name: found.name,
+            was_hidden: !found.visible,
+        });
     }
     if let Some(name) = ours.into_iter().next() {
         client
@@ -157,7 +224,7 @@ pub async fn add(
         .create(Create {
             scene: SceneId::Name(scene),
             input: &name,
-            kind: KIND,
+            kind: source_kind(),
             settings: Some(settings),
             enabled: Some(true),
         })

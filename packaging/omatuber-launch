@@ -1,0 +1,5 @@
+#!/bin/sh
+# Enable the installed native backend; OMATUBER_DMABUF=0 selects the browser.
+set -eu
+export OMATUBER_DMABUF="${OMATUBER_DMABUF:-1}"
+exec "$(dirname -- "$0")/omatuber-bin" "$@"

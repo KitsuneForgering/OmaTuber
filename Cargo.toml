@@ -20,7 +20,14 @@ uuid = { version = "1", features = ["serde", "v4"] }
 keyring-core = "1"
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"] }
 
+libc = { version = "0.2", optional = true }
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"
+
 [features]
+dmabuf = ["dep:libc"]
 # Sound-type detection probe: PipeWire capture and the naive Bayes classifier.
 sound = ["dep:hound", "dep:pipewire", "dep:rustfft"]
 

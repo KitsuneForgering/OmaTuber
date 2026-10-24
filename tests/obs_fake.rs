@@ -472,3 +472,40 @@ async fn mouth_latency_from_meter_to_page() {
         "our share should be well under one meter period"
     );
 }
+
+#[tokio::test]
+async fn worker_configures_all_scenes_and_reports_completion() {
+    let (port, _obs, world) = fake_obs("certa").await;
+    let worker = obs::spawn(Outputs::default(), || {});
+    let mut status = worker.status.clone();
+    worker
+        .commands
+        .send(Command::SceneTarget {
+            scene: None,
+            settings: settings(),
+        })
+        .unwrap();
+    worker.commands.send(connect(port, "certa")).unwrap();
+    wait_for(&mut status, "connected", |s| {
+        s.connection == Connection::Connected
+    })
+    .await;
+    worker.commands.send(Command::ConfigureAllScenes).unwrap();
+    let done = wait_for(&mut status, "all scenes configured", |s| {
+        !s.configuring_scenes
+            && s.scene_message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("2/2 cenas configuradas"))
+    })
+    .await;
+    assert_eq!(
+        done.placement,
+        Some(("Principal".into(), Placement::Visible))
+    );
+    let w = world.lock().unwrap();
+    assert_eq!(w.ours().len(), 1);
+    assert_eq!(
+        w.items.iter().filter(|i| i.2 == "OmaTuber" && i.3).count(),
+        2
+    );
+}

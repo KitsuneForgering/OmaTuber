@@ -115,6 +115,28 @@ impl Default for Outputs {
 }
 
 impl Outputs {
+    #[cfg(feature = "dmabuf")]
+    pub(crate) fn dmabuf_snapshot(&self) -> crate::dmabuf::Snapshot {
+        let scene = self.scene();
+        let registered = self.assets.read().unwrap_or_else(|e| e.into_inner());
+        let sentiment = scene
+            .sentiment
+            .iter()
+            .flat_map(|s| [s.quiet.as_ref(), s.talking.as_ref()])
+            .flatten();
+        let keys = sentiment.chain(scene.objects.iter().map(|o| &o.asset));
+        let assets = keys
+            .filter_map(|key| registered.get(key).map(|v| (key.clone(), v.clone())))
+            .collect();
+        crate::dmabuf::Snapshot {
+            mouth: self.mouth(),
+            blinking: self.blinking(),
+            images: self.images.borrow().clone(),
+            scene,
+            assets,
+        }
+    }
+
     /// Follows mouth changes, e.g. to measure silence.
     pub fn watch_mouth(&self) -> watch::Receiver<Mouth> {
         self.mouth.subscribe()

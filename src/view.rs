@@ -129,6 +129,7 @@ pub enum Action {
     ChooseScene(Option<String>),
     /// Create, link or re-show the avatar's browser source in the scene.
     AddToScene,
+    ConfigureAllScenes,
     /// Begin guided calibration (silence, then speech).
     StartCalibration,
     /// Nudge the open image on the shared canvas, in its pixels.
@@ -1159,7 +1160,11 @@ fn checklist_card(
                             &p,
                             Step::Waiting,
                             "Ainda não adicionado",
-                            "O OmaTuber cria uma fonte Navegador com a URL e o tamanho do avatar",
+                            if crate::scene::source_kind() == "omatuber_dmabuf" {
+                                "O OmaTuber adiciona sua fonte própria ao OBS; o plugin precisa estar instalado"
+                            } else {
+                                "O OmaTuber cria uma fonte Navegador com a URL e o tamanho do avatar"
+                            },
                             false,
                         );
                         keep_open_hint(ui, &p);
@@ -1188,6 +1193,13 @@ fn checklist_card(
                 }
                 if connected && status.scenes.names.len() > 1 {
                     indented(ui, |ui| scene_picker(ui, s, status, actions));
+                }
+                if connected {
+                    indented(ui, |ui| {
+                        if ui.add_enabled(!status.configuring_scenes, egui::Button::new("Configurar todas as cenas")).clicked() {
+                            actions.push(Action::ConfigureAllScenes);
+                        }
+                    });
                 }
                 if let Some(msg) = &status.scene_message {
                     indented(ui, |ui| {

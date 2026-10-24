@@ -4,6 +4,7 @@
 //! `App::ui` while the window is hidden, and the stream must keep animating
 //! with the app minimized.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -71,6 +72,7 @@ pub struct Status {
     pub placement: Option<(String, Placement)>,
     /// Result of the last "add to scene", or why it failed.
     pub scene_message: Option<String>,
+    pub configuring_scenes: bool,
     /// Calibration: levels are being gathered for the selected input.
     pub collecting: bool,
     /// Levels (dBFS) from the last finished gathering, one per meter event,
@@ -91,6 +93,7 @@ impl Default for Status {
             scenes: scene::Scenes::default(),
             placement: None,
             scene_message: None,
+            configuring_scenes: false,
             collecting: false,
             collected: Vec::new(),
             batches: 0,
@@ -116,6 +119,7 @@ pub enum Command {
     },
     /// Add the avatar to the target scene, reusing its source if present.
     AddToScene,
+    ConfigureAllScenes,
     /// Gather the selected input's levels for this long (calibration). Only
     /// levels are kept, never audio.
     CollectLevels(Duration),
@@ -136,7 +140,7 @@ pub fn spawn(outputs: Outputs, notify: impl Fn() + Send + 'static) -> Handle {
 }
 
 struct Session {
-    client: Client,
+    client: Arc<Client>,
     events: EventStream,
     /// Name of the selected input; meter events carry only names in obws 0.15.
     selected_name: Option<String>,
@@ -163,6 +167,7 @@ struct Worker<N> {
     retry_at: Option<Instant>,
     retry_delay: Duration,
     scene_target: Option<(Option<String>, BrowserSettings)>,
+    configuring: Option<JoinHandle<Result<crate::scene_sync::Report, String>>>,
     /// Calibration in progress: until when, and the levels so far.
     collect: Option<(Duration, Vec<f32>)>,
 }
@@ -183,6 +188,7 @@ impl<N: Fn()> Worker<N> {
             retry_at: None,
             retry_delay: RETRY_MIN,
             scene_target: None,
+            configuring: None,
             collect: None,
         }
     }
@@ -202,6 +208,22 @@ impl<N: Fn()> Worker<N> {
                     self.connected(result);
                     self.refresh_muted().await;
                     self.refresh_scene().await;
+                }
+                result = configuration_result(&mut self.configuring) => {
+                    self.configuring = None;
+                    self.refresh_scene().await;
+                    self.status.send_modify(|s| {
+                        s.configuring_scenes = false;
+                        s.scene_message = Some(match result {
+                            Ok(report) => {
+                                let mut message = format!("{}/{} cenas configuradas com a fonte compartilhada \"{}\"; {} vínculos criados, {} fontes antigas ocultadas", report.configured, report.total, report.source, report.created_items, report.hidden_items);
+                                if !report.errors.is_empty() { message.push_str(&format!(". Pendências: {}", report.errors.join("; "))); }
+                                message
+                            }
+                            Err(error) => format!("Não foi possível configurar as cenas: {error}"),
+                        });
+                    });
+                    (self.notify)();
                 }
                 _ = sleep_until_opt(self.retry_at) => {
                     self.retry_at = None;
@@ -246,7 +268,9 @@ impl<N: Fn()> Worker<N> {
                 self.scene_target = Some((scene, settings));
                 self.refresh_scene().await;
             }
-            Command::AddToScene => self.add_to_scene().await,
+            Command::AddToScene if self.configuring.is_none() => self.add_to_scene().await,
+            Command::AddToScene => {}
+            Command::ConfigureAllScenes => self.configure_all_scenes(),
             Command::CollectLevels(length) => {
                 self.collect = Some((self.now() + length, Vec::new()));
                 self.status.send_modify(|s| s.collecting = true);
@@ -331,6 +355,26 @@ impl<N: Fn()> Worker<N> {
         };
         self.status.send_modify(|s| s.scene_message = Some(message));
         self.refresh_scene().await;
+    }
+
+    fn configure_all_scenes(&mut self) {
+        if self.configuring.is_some() {
+            return;
+        }
+        let (Some(session), Some((_, settings))) = (&self.session, &self.scene_target) else {
+            return;
+        };
+        let client = session.client.clone();
+        let settings = settings.clone();
+        let kind = scene::source_kind();
+        self.configuring = Some(tokio::spawn(async move {
+            crate::scene_sync::configure(&client, &settings, kind).await
+        }));
+        self.status.send_modify(|s| {
+            s.configuring_scenes = true;
+            s.scene_message = Some("Configurando as cenas da coleção atual…".into());
+        });
+        (self.notify)();
     }
 
     fn tick(&mut self) {
@@ -433,7 +477,7 @@ impl<N: Fn()> Worker<N> {
                 self.retry_delay = RETRY_MIN;
                 let selected_name = name_of(&inputs, self.selected);
                 self.session = Some(Session {
-                    client,
+                    client: Arc::new(client),
                     events,
                     selected_name,
                 });
@@ -459,6 +503,13 @@ impl<N: Fn()> Worker<N> {
     }
 
     fn drop_connection(&mut self) {
+        if let Some(task) = self.configuring.take() {
+            task.abort();
+            self.status.send_modify(|s| {
+                s.configuring_scenes = false;
+                s.scene_message = Some("Configuração interrompida. As fontes antigas foram preservadas; execute novamente para concluir.".into());
+            });
+        }
         if let Some(task) = self.connecting.take() {
             task.abort();
         }
@@ -584,6 +635,15 @@ async fn join(task: &mut Option<JoinHandle<ConnectResult>>) -> ConnectResult {
         Some(t) => t
             .await
             .unwrap_or_else(|e| Err(ConnectError::Retry(e.to_string()))),
+        None => std::future::pending().await,
+    }
+}
+
+async fn configuration_result(
+    task: &mut Option<JoinHandle<Result<crate::scene_sync::Report, String>>>,
+) -> Result<crate::scene_sync::Report, String> {
+    match task {
+        Some(t) => t.await.unwrap_or_else(|e| Err(e.to_string())),
         None => std::future::pending().await,
     }
 }

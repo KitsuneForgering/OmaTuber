@@ -465,6 +465,18 @@ mod scene_step {
     }
 
     #[test]
+    fn all_scenes_action_is_available_when_connected() {
+        let mut h = harness(on_scene(Placement::Visible));
+        h.run();
+        h.get_by_label("Configurar todas as cenas").click();
+        h.run();
+        assert_eq!(h.state().1, [Action::ConfigureAllScenes]);
+        let mut h = harness(idle());
+        h.run();
+        assert!(h.query_by_label("Configurar todas as cenas").is_none());
+    }
+
+    #[test]
     fn not_added_offers_adding_to_the_named_scene() {
         let mut h = harness(on_scene(Placement::NotAdded));
         h.run();

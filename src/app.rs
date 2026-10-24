@@ -73,6 +73,10 @@ impl Target {
 /// The OmaTuber window: wires the view to the OBS worker, the reactions
 /// task, the local server and the files on disk.
 pub struct App {
+    #[cfg(feature = "dmabuf")]
+    dmabuf: Option<crate::dmabuf::Handle>,
+    #[cfg(feature = "dmabuf")]
+    dmabuf_error: Option<String>,
     config: Config,
     runtime: tokio::runtime::Runtime,
     outputs: Outputs,
@@ -158,7 +162,20 @@ impl App {
         let (loaded_tx, loaded_rx) = channel();
         let (lib_tx, lib_rx) = channel();
         let (secret_tx, secret_rx) = channel();
+        #[cfg(feature = "dmabuf")]
+        let (dmabuf, dmabuf_error) = if crate::dmabuf::enabled() {
+            match crate::dmabuf::start(outputs.clone()) {
+                Ok(handle) => (Some(handle), None),
+                Err(e) => (None, Some(format!("DMA-BUF: {e}"))),
+            }
+        } else {
+            (None, None)
+        };
         let mut app = Self {
+            #[cfg(feature = "dmabuf")]
+            dmabuf,
+            #[cfg(feature = "dmabuf")]
+            dmabuf_error,
             config,
             runtime,
             outputs,
@@ -458,6 +475,7 @@ impl App {
                 self.update_scene_target();
             }
             Action::AddToScene => self.send(Command::AddToScene),
+            Action::ConfigureAllScenes => self.send(Command::ConfigureAllScenes),
             Action::SetOpenOffset(offset) => {
                 self.view.open_offset = offset;
                 self.update_scene_target();
@@ -1044,6 +1062,19 @@ impl eframe::App for App {
         self.receive_loaded(&ctx);
         self.receive_library(&ctx);
         self.receive_secret();
+        #[cfg(feature = "dmabuf")]
+        if let Some(handle) = &mut self.dmabuf
+            && handle.status.has_changed().unwrap_or(true)
+            && let Err(error) = &*handle.status.borrow_and_update()
+        {
+            self.dmabuf_error = Some(format!("DMA-BUF: {error}"));
+        }
+        #[cfg(feature = "dmabuf")]
+        if let Some(error) = &self.dmabuf_error {
+            egui::Panel::top("dmabuf_error").show(ui, |ui| {
+                ui.colored_label(egui::Color32::LIGHT_RED, error);
+            });
+        }
         // Same blink signal the pages get, so the preview blinks with OBS.
         self.view.blinking = self.outputs.blinking();
         if let Some(palette) = self.theme_rx.try_iter().last() {

@@ -15,6 +15,7 @@ pub mod obs;
 pub mod prefs;
 pub mod reactions;
 pub mod scene;
+pub mod scene_sync;
 pub mod secret;
 pub mod server;
 #[cfg(feature = "sound")]
@@ -25,3 +26,6 @@ pub mod training;
 pub mod view;
 #[cfg(feature = "sound")]
 pub mod voice;
+
+#[cfg(feature = "dmabuf")]
+pub mod dmabuf;

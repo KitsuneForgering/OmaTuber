@@ -242,6 +242,11 @@ pub fn load(path: &Path, limits: Limits) -> Result<Png, LoadError> {
 }
 
 pub fn decode(bytes: Vec<u8>, limits: Limits) -> Result<Png, LoadError> {
+    if bytes.len() as u64 > limits.max_bytes {
+        return Err(LoadError::TooLarge {
+            max_bytes: limits.max_bytes,
+        });
+    }
     let format = ImageReader::new(Cursor::new(&bytes))
         .with_guessed_format()
         .map_err(LoadError::Io)?
@@ -299,6 +304,11 @@ fn check_side(width: u32, height: u32, limits: Limits) -> Result<(), LoadError> 
             width,
             height,
             max_side: limits.max_side,
+        });
+    }
+    if u64::from(width) * u64::from(height) * 4 > limits.max_decoded_bytes {
+        return Err(LoadError::TooMuchMemory {
+            max_mib: limits.max_decoded_bytes / (1024 * 1024),
         });
     }
     Ok(())
@@ -391,6 +401,42 @@ mod tests {
     const RED: [u8; 4] = [255, 0, 0, 255];
     const BLUE: [u8; 4] = [0, 0, 255, 255];
     const CLEAR: [u8; 4] = [0, 0, 0, 0];
+
+    #[test]
+    fn decode_enforces_byte_and_memory_limits_for_all_formats() {
+        for bytes in [
+            png(2, 2),
+            apng(&[RED, BLUE], &[100, 100]),
+            gif(&[RED, BLUE], 10),
+        ] {
+            let limits = Limits {
+                max_bytes: bytes.len() as u64 - 1,
+                ..Limits::default()
+            };
+            assert!(matches!(
+                decode(bytes.clone(), limits),
+                Err(LoadError::TooLarge { .. })
+            ));
+            let limits = Limits {
+                max_decoded_bytes: 15,
+                ..Limits::default()
+            };
+            assert!(matches!(
+                decode(bytes, limits),
+                Err(LoadError::TooMuchMemory { .. })
+            ));
+        }
+        assert!(
+            decode(
+                png(2, 2),
+                Limits {
+                    max_decoded_bytes: 16,
+                    ..Limits::default()
+                }
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn decodes_valid_png_and_keeps_original_bytes() {

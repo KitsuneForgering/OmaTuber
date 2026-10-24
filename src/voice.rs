@@ -94,6 +94,8 @@ impl Listener {
             let drop = self.stream.pending() + samples.len() - keep;
             self.stats.dropped += Duration::from_secs_f64(drop as f64 / SAMPLE_RATE as f64);
             self.stream.reset();
+            // Confirmation requires contiguous audio, including held sounds.
+            self.detector.update(None);
             &samples[samples.len() - keep..]
         } else {
             samples
@@ -359,6 +361,18 @@ mod tests {
             l.stream.pending() < WINDOW_SAMPLES,
             "everything left was analysed"
         );
+    }
+
+    #[test]
+    fn dropped_audio_requires_a_fresh_confirmation() {
+        let mut l = Listener::new(model());
+        let sound = tone(SAMPLE_RATE * 2, 220.0);
+        let heard: Vec<_> = sound.chunks(160).flat_map(|c| l.push(c)).collect();
+        assert!(heard.iter().any(|h| matches!(h, Heard::Fired(_))));
+        // A delayed chunk keeps sounding identical, but continuity was lost.
+        let heard = l.push(&tone(SAMPLE_RATE * 3, 220.0));
+        assert!(l.stats.dropped > Duration::ZERO);
+        assert_eq!(heard.first(), Some(&Heard::Fired("risada".into())));
     }
 
     #[test]

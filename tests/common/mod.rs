@@ -3,6 +3,7 @@
 //! `docs/generated/protocol.md`) and the mock in obws's own tests.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
@@ -30,6 +31,12 @@ pub struct World {
     pub items: Vec<(String, i64, String, bool)>,
     pub next_item: i64,
     pub mic_muted: bool,
+    pub groups: Vec<String>,
+    pub transforms: HashMap<(String, i64), Value>,
+    pub locks: HashMap<(String, i64), bool>,
+    pub blends: HashMap<(String, i64), String>,
+    pub rejected_request: Option<String>,
+    pub input_kinds: Vec<String>,
 }
 
 pub struct Input {
@@ -57,6 +64,12 @@ impl World {
             items: Vec::new(),
             next_item: 1,
             mic_muted: false,
+            groups: Vec::new(),
+            transforms: HashMap::new(),
+            locks: HashMap::new(),
+            blends: HashMap::new(),
+            rejected_request: None,
+            input_kinds: vec![scene::KIND.into(), scene::NATIVE_KIND.into()],
         }
     }
 
@@ -211,6 +224,9 @@ fn fail(code: u16, comment: &str) -> (Value, Value) {
 fn respond(req: &Value, w: &mut World) -> (Value, Value) {
     let ok = json!({ "result": true, "code": 100 });
     let data = &req["requestData"];
+    if w.rejected_request.as_deref() == req["requestType"].as_str() {
+        return fail(500, "Injected request failure");
+    }
     let find_input = |w: &World| -> Option<usize> {
         w.inputs
             .iter()
@@ -225,6 +241,20 @@ fn respond(req: &Value, w: &mut World) -> (Value, Value) {
                 "platform": "fake", "platformDescription": "",
             }),
         ),
+        "GetInputKindList" => (ok, json!({ "inputKinds": w.input_kinds })),
+        "GetGroupList" => (ok, json!({ "groups": w.groups })),
+        "SetInputSettings" => {
+            let Some(i) = find_input(w) else {
+                return fail(600, "No source was found.");
+            };
+            if data["overlay"] == false {
+                w.inputs[i].settings = json!({});
+            }
+            for (key, value) in data["inputSettings"].as_object().unwrap() {
+                w.inputs[i].settings[key] = value.clone();
+            }
+            (ok, Value::Null)
+        }
         "GetInputList" => {
             let kind = data["inputKind"].as_str();
             let inputs: Vec<Value> = w
@@ -268,16 +298,21 @@ fn respond(req: &Value, w: &mut World) -> (Value, Value) {
                 }),
             )
         }
-        "GetSceneItemList" => {
+        "GetSceneItemList" | "GetGroupSceneItemList" => {
             let items: Vec<Value> = w
                 .items
                 .iter()
                 .filter(|(s, ..)| data["sceneName"] == *s)
                 .enumerate()
-                .map(|(idx, (_, id, source, _))| json!({
-                    "sceneItemId": id, "sceneItemIndex": idx, "sourceName": source,
-                    "sourceType": "OBS_SOURCE_TYPE_INPUT", "inputKind": scene::KIND, "isGroup": null,
-                }))
+                .map(|(idx, (_, id, source, _))| {
+                    let group = w.groups.contains(source);
+                    let nested = group || w.scenes.contains(source);
+                    let kind = w.inputs.iter().find(|i| &i.name == source).map(|i| &i.kind);
+                    json!({ "sceneItemId": id, "sceneItemIndex": idx, "sourceName": source,
+                        "sourceType": if nested { "OBS_SOURCE_TYPE_SCENE" } else { "OBS_SOURCE_TYPE_INPUT" },
+                        "inputKind": kind, "isGroup": if nested { Some(group) } else { None },
+                    })
+                })
                 .collect();
             (ok, json!({ "sceneItems": items }))
         }
@@ -295,6 +330,82 @@ fn respond(req: &Value, w: &mut World) -> (Value, Value) {
                 Some(item) => (ok, json!({ "sceneItemEnabled": item.3 })),
                 None => fail(600, "No scene item was found."),
             }
+        }
+        "GetSceneItemTransform"
+        | "SetSceneItemTransform"
+        | "GetSceneItemLocked"
+        | "SetSceneItemLocked"
+        | "GetSceneItemBlendMode"
+        | "SetSceneItemBlendMode" => {
+            let key = (
+                data["sceneName"].as_str().unwrap().to_owned(),
+                data["sceneItemId"].as_i64().unwrap(),
+            );
+            if !w.items.iter().any(|i| i.0 == key.0 && i.1 == key.1) {
+                return fail(600, "No scene item was found.");
+            }
+            match req["requestType"].as_str().unwrap() {
+                "GetSceneItemTransform" => (
+                    ok,
+                    json!({ "sceneItemTransform": w.transforms.get(&key).cloned().unwrap_or_else(default_transform) }),
+                ),
+                "SetSceneItemTransform" => {
+                    let transform = w.transforms.entry(key).or_insert_with(default_transform);
+                    for (k, v) in data["sceneItemTransform"].as_object().unwrap() {
+                        transform[k] = v.clone();
+                    }
+                    (ok, Value::Null)
+                }
+                "GetSceneItemLocked" => (
+                    ok,
+                    json!({ "sceneItemLocked": w.locks.get(&key).copied().unwrap_or(false) }),
+                ),
+                "SetSceneItemLocked" => {
+                    w.locks
+                        .insert(key, data["sceneItemLocked"].as_bool().unwrap());
+                    (ok, Value::Null)
+                }
+                "GetSceneItemBlendMode" => (
+                    ok,
+                    json!({ "sceneItemBlendMode": w.blends.get(&key).map_or("OBS_BLEND_NORMAL", String::as_str) }),
+                ),
+                _ => {
+                    w.blends
+                        .insert(key, data["sceneItemBlendMode"].as_str().unwrap().to_owned());
+                    (ok, Value::Null)
+                }
+            }
+        }
+        "SetSceneItemIndex" => {
+            let Some(old) = w
+                .items
+                .iter()
+                .position(|i| data["sceneName"] == i.0 && data["sceneItemId"] == i.1)
+            else {
+                return fail(600, "No scene item was found.");
+            };
+            let item = w.items.remove(old);
+            let index = data["sceneItemIndex"].as_u64().unwrap() as usize;
+            let dest = w
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, i)| i.0 == item.0)
+                .nth(index)
+                .map_or(w.items.len(), |(i, _)| i);
+            w.items.insert(dest, item);
+            (ok, Value::Null)
+        }
+        "RemoveSceneItem" => {
+            let Some(index) = w
+                .items
+                .iter()
+                .position(|i| data["sceneName"] == i.0 && data["sceneItemId"] == i.1)
+            else {
+                return fail(600, "No scene item was found.");
+            };
+            w.items.remove(index);
+            (ok, Value::Null)
         }
         "CreateInput" => {
             let name = data["inputName"].as_str().unwrap().to_owned();
@@ -334,4 +445,12 @@ fn respond(req: &Value, w: &mut World) -> (Value, Value) {
         }
         _ => fail(204, "Unknown request type."),
     }
+}
+
+pub fn default_transform() -> Value {
+    json!({ "sourceWidth": 512.0, "sourceHeight": 512.0, "positionX": 0.0, "positionY": 0.0,
+        "rotation": 0.0, "scaleX": 1.0, "scaleY": 1.0, "width": 512.0, "height": 512.0,
+        "alignment": 5, "boundsType": "OBS_BOUNDS_NONE", "boundsAlignment": 0,
+        "boundsWidth": 0.0, "boundsHeight": 0.0, "cropLeft": 0, "cropRight": 0,
+        "cropTop": 0, "cropBottom": 0, "cropToBounds": false })
 }

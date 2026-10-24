@@ -1,7 +1,7 @@
 //! Non-secret preferences, stored as JSON in the user's config directory.
 //! The OBS password is deliberately not part of this file.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -78,14 +78,20 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .parent()
         .ok_or_else(|| io::Error::other("path has no parent"))?;
     fs::create_dir_all(dir)?;
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    let mut file = File::create(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(&tmp, path)?;
+    // Each writer owns its temporary file; concurrent app instances must not
+    // truncate or rename one another's in-progress save.
+    let tmp = dir.join(format!(".omatuber-{}.tmp", Uuid::new_v4()));
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)
+    })();
+    if let Err(e) = result {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
     // Persist the rename itself.
     File::open(dir)?.sync_all()
 }
@@ -99,6 +105,40 @@ mod tests {
             std::env::temp_dir().join(format!("omatuber-prefs-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn concurrent_saves_publish_complete_files_and_clean_up() {
+        let dir = temp_dir("concurrent");
+        let path = dir.join("prefs.json");
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for i in 0..8u8 {
+                let path = &path;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..16 {
+                        write_atomic(path, &vec![i; 8192]).unwrap();
+                    }
+                });
+            }
+        });
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(bytes.len(), 8192);
+        assert!(bytes.iter().all(|b| *b == bytes[0]));
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_rename_cleans_up_temporary_file() {
+        let dir = temp_dir("failed-rename");
+        let path = dir.join("directory");
+        fs::create_dir_all(&path).unwrap();
+        assert!(write_atomic(&path, b"new contents").is_err());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
