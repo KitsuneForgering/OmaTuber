@@ -74,8 +74,8 @@ preview. This test only affects the preview.
 In `Reações e objetos`, a sentiment is a named expression with quiet and
 optional talking images. You choose how long it stays on screen, its priority,
 and any objects that appear with it. Objects are image layers, such as glasses
-or a mug, with adjustable position and size. Use `Aplicar` to save and apply
-library edits.
+or a mug, with adjustable position and size. Use the draft preview to test expressions and drag objects into place.
+Choose `Aplicar ao OBS` to save and apply library edits.
 
 Expressions can be triggered manually, by a trained sound, or after a chosen
 period of silence. You can also call the running app from a desktop shortcut:

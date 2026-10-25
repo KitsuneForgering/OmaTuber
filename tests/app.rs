@@ -146,12 +146,12 @@ fn applying_a_new_sentiment_writes_the_library() {
         !fx.dir.join("library.json").exists(),
         "draft only until Aplicar"
     );
-    h.get_by_label("Aplicar").click();
+    h.get_by_label("Aplicar ao OBS").click();
     h.run();
     let json = std::fs::read_to_string(fx.dir.join("library.json")).unwrap();
     assert!(json.contains("\"Sentimento 1\""), "{json}");
     // Now it can be shown, and the main page says what is on air.
-    h.get_by_label("Mostrar agora").click();
+    h.get_by_label("Mostrar no OBS").click();
     step_until(&mut h, "on air", |h| {
         h.query_by_label_contains("No ar: Sentimento 1").is_some()
     });

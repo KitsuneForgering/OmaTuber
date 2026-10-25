@@ -1,9 +1,8 @@
 //! "Reações e objetos": editor for the sentiment/object library.
 //!
-//! Edits go to a draft; nothing reaches OBS until **Aplicar**, and
-//! **Desfazer** returns to the applied version (plan: "permitir desfazer uma
-//! edição ainda não aplicada"). Kept off the main screen until the basic flow
-//! has been observed with users, as the plan asks.
+//! Edits and preview interactions stay in the draft until **Aplicar ao OBS**.
+//! **Descartar alterações** restores the applied library; showing an applied
+//! expression or object on OBS is a separate, explicit action.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,9 +45,20 @@ pub enum FileTarget {
     Object(Uuid),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorItem {
+    Sentiment(Uuid),
+    Object(Uuid),
+}
+
 #[derive(Default)]
 pub struct LibraryView {
     pub draft: Library,
+    pub selected: Option<EditorItem>,
+    pub preview_sentiment: Option<Uuid>,
+    pub preview_talking: bool,
+    /// File errors for the draft, independent of the on-air library.
+    pub file_errors: HashMap<PathBuf, String>,
     /// What the reactions task is using.
     pub applied: Library,
     /// From the reactions task: per item, why its file is not in use.
@@ -135,7 +145,45 @@ pub fn source_label(source: Source) -> &'static str {
     }
 }
 
-pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
+pub fn draw(
+    ui: &mut egui::Ui,
+    s: &mut ViewState,
+    status: &crate::obs::Status,
+    actions: &mut Vec<Action>,
+) {
+    // Each column scrolls independently: editing a long form never hides the stage.
+    if ui.available_width() >= 850.0 {
+        ui.columns(2, |columns| {
+            egui::ScrollArea::vertical()
+                .id_salt("library-form")
+                .show(&mut columns[0], |ui| editor(ui, s, actions));
+            egui::ScrollArea::vertical()
+                .id_salt("library-preview")
+                .show(&mut columns[1], |ui| draft_preview(ui, s, status));
+        });
+    } else {
+        draft_preview(ui, s, status);
+        egui::ScrollArea::vertical()
+            .id_salt("library-form")
+            .show(ui, |ui| editor(ui, s, actions));
+    }
+}
+
+fn draft_preview(ui: &mut egui::Ui, s: &mut ViewState, status: &crate::obs::Status) {
+    ui.label(RichText::new("Prévia do rascunho").size(18.0).strong());
+    ui.label("Teste aqui antes de aplicar ao OBS.");
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(&mut s.library.preview_talking, false, "Quieto");
+        ui.selectable_value(&mut s.library.preview_talking, true, "Falando");
+        if ui.button("Ver base na prévia").clicked() {
+            s.library.preview_sentiment = None;
+        }
+    });
+    crate::view::preview_stage(ui, s, status, true);
+    ui.label("Selecione um objeto e arraste-o na prévia. Ajuste o tamanho no editor.");
+}
+
+fn editor(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
     let p = s.palette;
     let lib = &mut s.library;
 
@@ -150,11 +198,14 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
     });
     ui.horizontal_wrapped(|ui| {
         let dirty = lib.dirty();
-        if ui.add_enabled(dirty, accent(&p, "Aplicar")).clicked() {
+        if ui
+            .add_enabled(dirty, accent(&p, "Aplicar ao OBS"))
+            .clicked()
+        {
             actions.push(Action::ApplyLibrary);
         }
         if ui
-            .add_enabled(dirty, egui::Button::new("Desfazer"))
+            .add_enabled(dirty, egui::Button::new("Descartar alterações"))
             .clicked()
         {
             lib.draft = lib.applied.clone();
@@ -177,19 +228,15 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
     }
     ui.add_space(8.0);
 
-    if lib.voice.available {
-        voice_section(ui, &p, &mut lib.voice, actions);
-        ui.add_space(8.0);
-    }
-
     // ------------------------------------------------------------ sentiments
     ui.horizontal(|ui| {
         ui.label(RichText::new("Sentimentos").size(16.0).strong());
         if ui.button("Adicionar sentimento").clicked() {
             let n = lib.draft.sentiments.len() + 1;
-            lib.draft
-                .sentiments
-                .push(Sentiment::new(format!("Sentimento {n}")));
+            let item = Sentiment::new(format!("Sentimento {n}"));
+            lib.selected = Some(EditorItem::Sentiment(item.id));
+            lib.preview_sentiment = Some(item.id);
+            lib.draft.sentiments.push(item);
         }
     });
     if lib.draft.sentiments.is_empty() {
@@ -198,6 +245,38 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
                 .color(p.muted),
         );
     }
+    // Keep only one form open; selection also chooses the local composition.
+    let valid = match lib.selected {
+        Some(EditorItem::Sentiment(id)) => lib.draft.sentiments.iter().any(|s| s.id == id),
+        Some(EditorItem::Object(id)) => lib.draft.objects.iter().any(|o| o.id == id),
+        None => false,
+    };
+    if !valid {
+        lib.selected = lib
+            .draft
+            .sentiments
+            .first()
+            .map(|s| EditorItem::Sentiment(s.id))
+            .or_else(|| lib.draft.objects.first().map(|o| EditorItem::Object(o.id)));
+        lib.preview_sentiment = match lib.selected {
+            Some(EditorItem::Sentiment(id)) => Some(id),
+            _ => None,
+        };
+    }
+    ui.horizontal_wrapped(|ui| {
+        for sentiment in &lib.draft.sentiments {
+            if ui
+                .selectable_label(
+                    lib.selected == Some(EditorItem::Sentiment(sentiment.id)),
+                    format!("Editar expressão: {}", sentiment.name),
+                )
+                .clicked()
+            {
+                lib.selected = Some(EditorItem::Sentiment(sentiment.id));
+                lib.preview_sentiment = Some(sentiment.id);
+            }
+        }
+    });
     let objects: Vec<(Uuid, String)> = lib
         .draft
         .objects
@@ -206,13 +285,16 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
         .collect();
     let mut remove = None;
     for (i, sentiment) in lib.draft.sentiments.iter_mut().enumerate() {
+        if lib.selected != Some(EditorItem::Sentiment(sentiment.id)) {
+            continue;
+        }
         let applied_name = lib
             .applied
             .sentiments
             .iter()
             .find(|a| a.id == sentiment.id)
             .map(|a| a.name.clone());
-        let applied = applied_name.is_some();
+        let applied = lib.applied.sentiments.iter().any(|a| a == sentiment);
         let on_air = lib.active.map(|(id, _)| id) == Some(sentiment.id);
         card(&p, on_air).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -237,10 +319,10 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
                             let show = ui
                                 .add_enabled(
                                     applied && sentiment.enabled,
-                                    accent(&p, "Mostrar agora"),
+                                    accent(&p, "Mostrar no OBS"),
                                 )
                                 .on_hover_text("Aparece também no OBS")
-                                .on_disabled_hover_text("Aplique as alterações primeiro");
+                                .on_disabled_hover_text("Aplique as alterações deste item antes de mostrar no OBS");
                             if show.clicked() {
                                 actions.push(Action::TriggerSentiment(sentiment.id));
                             }
@@ -276,6 +358,7 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
                         sentiment.talking = None;
                     }
                 });
+                egui::CollapsingHeader::new("Duração e gatilhos").show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     let mut until_next = sentiment.ending == Ending::UntilNext;
                     if ui.checkbox(&mut until_next, "Fica até o próximo").changed() {
@@ -356,6 +439,7 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
                         );
                     }
                 }
+                });
                 if !objects.is_empty() {
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Objetos junto:");
@@ -382,6 +466,11 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
                     None => "O atalho funciona depois de aplicar".to_owned(),
                 };
                 ui.label(RichText::new(hint).monospace().small().color(p.muted));
+                for path in [sentiment.quiet.as_ref(), sentiment.talking.as_ref()].into_iter().flatten() {
+                    if let Some(e) = lib.file_errors.get(path) {
+                        ui.colored_label(p.red, e);
+                    }
+                }
                 if let Some(e) = lib.errors.get(&sentiment.id) {
                     ui.add(egui::Label::new(RichText::new(e.as_str()).color(p.red)).wrap());
                 }
@@ -399,18 +488,30 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
         ui.label(RichText::new("Objetos").size(16.0).strong());
         if ui.button("Adicionar objeto").clicked() {
             let n = lib.draft.objects.len() + 1;
-            lib.draft
-                .objects
-                .push(Object::new(format!("Objeto {n}"), PathBuf::new()));
+            let item = Object::new(format!("Objeto {n}"), PathBuf::new());
+            lib.selected = Some(EditorItem::Object(item.id));
+            lib.draft.objects.push(item);
         }
     });
     if lib.draft.objects.is_empty() {
         ui.label(RichText::new("Nenhum objeto ainda. Objetos são imagens por cima do avatar, como uma caneca ou óculos.").color(p.muted));
     }
+    ui.horizontal_wrapped(|ui| {
+        for object in &lib.draft.objects {
+            ui.selectable_value(
+                &mut lib.selected,
+                Some(EditorItem::Object(object.id)),
+                format!("Editar objeto: {}", object.name),
+            );
+        }
+    });
     let mut remove = None;
     let mut removed_ids = Vec::new();
     for (i, object) in lib.draft.objects.iter_mut().enumerate() {
-        let applied = lib.applied.objects.iter().any(|a| a.id == object.id);
+        if lib.selected != Some(EditorItem::Object(object.id)) {
+            continue;
+        }
+        let applied = lib.applied.objects.iter().any(|a| a == object);
         let on = lib.objects_on.contains(&object.id);
         card(&p, on).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -429,10 +530,19 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
                             ui.checkbox(&mut object.enabled, "Ativo");
                         });
                         ui.horizontal(|ui| {
-                            let text = if on { "Ocultar" } else { "Mostrar" };
+                            let text = if on {
+                                "Ocultar no OBS"
+                            } else {
+                                "Mostrar no OBS"
+                            };
                             if ui
-                                .add_enabled(applied && object.enabled, egui::Button::new(text))
-                                .on_disabled_hover_text("Aplique as alterações primeiro")
+                                .add_enabled(
+                                    on || (applied && object.enabled),
+                                    egui::Button::new(text),
+                                )
+                                .on_disabled_hover_text(
+                                    "Aplique as alterações deste item antes de mostrar no OBS",
+                                )
                                 .clicked()
                             {
                                 actions.push(Action::ToggleObject(object.id));
@@ -455,20 +565,30 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
                 );
                 ui.horizontal_wrapped(|ui| {
                     for (label, value, range) in [
-                        ("Horizontal", &mut object.x, -0.5..=1.5),
-                        ("Vertical", &mut object.y, -0.5..=1.5),
-                        ("Tamanho", &mut object.scale, 0.02..=2.0),
+                        ("Horizontal (% da largura)", &mut object.x, -0.5..=1.5),
+                        ("Vertical (% da altura)", &mut object.y, -0.5..=1.5),
+                        ("Tamanho (% da largura)", &mut object.scale, 0.02..=2.0),
                     ] {
                         let l = ui.label(label);
-                        ui.add(
-                            egui::DragValue::new(value)
-                                .range(range)
-                                .speed(0.005)
-                                .fixed_decimals(2),
-                        )
-                        .labelled_by(l.id);
+                        let mut percent = *value * 100.0;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut percent)
+                                    .range(*range.start() * 100.0..=*range.end() * 100.0)
+                                    .speed(0.5)
+                                    .suffix(" %")
+                                    .fixed_decimals(1),
+                            )
+                            .labelled_by(l.id)
+                            .changed()
+                        {
+                            *value = percent / 100.0;
+                        }
                     }
                 });
+                if let Some(e) = lib.file_errors.get(&object.file) {
+                    ui.colored_label(p.red, e);
+                }
                 if let Some(e) = lib.errors.get(&object.id) {
                     ui.add(egui::Label::new(RichText::new(e.as_str()).color(p.red)).wrap());
                 }
@@ -481,6 +601,10 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, actions: &mut Vec<Action>) {
         for s in &mut lib.draft.sentiments {
             s.objects.retain(|o| !removed_ids.contains(o));
         }
+    }
+    if lib.voice.available {
+        ui.add_space(8.0);
+        voice_section(ui, &p, &mut lib.voice, actions);
     }
 }
 

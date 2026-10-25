@@ -63,10 +63,22 @@ screen; equal priority goes to the newest trigger. An expression can also
 appear after a chosen period of silence. The base avatar returns when you
 speak again.
 
-Add objects as separate image layers, adjust their placement and size, and
-select which ones appear with an expression. Click `Aplicar` when the library
-is ready. Unapplied edits stay in the editor; `Desfazer` restores the applied
-library.
+Select an expression or object to edit one item at a time. The `Prévia do
+rascunho` shows your edits locally; switch between `Quieto` and `Falando`
+without affecting OBS. Duration, priority, silence, and sound triggers are
+under `Duração e gatilhos`.
+
+Add objects as separate image layers. Select an object and drag it in the
+preview to position it, or use the numeric controls for precise placement and
+size. Position is the object's center as a percentage of the avatar canvas;
+size is a percentage of its width. Select which objects appear with each
+expression.
+
+Click `Aplicar ao OBS` to save and apply the library. `Mostrar no OBS` activates
+the applied item; apply pending changes to that item first. `Descartar
+alterações` restores the entire draft to the applied library. Base avatar
+settings on the `Avatar` page are saved and sent to OBS automatically; the
+library preview remains local.
 
 For shortcuts, use `omatuber reagir "Name"` with an enabled expression's name,
 or `omatuber base` to return to the base avatar. These commands contact the

@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::calibration::{Problem, Suggestion};
 use crate::layout;
-use crate::library_view::{FileTarget, LibraryView};
+use crate::library_view::{EditorItem, FileTarget, LibraryView};
 use crate::mouth::{GateParams, Mouth};
 use crate::obs::{Connection, Status};
 use crate::scene::Placement;
@@ -268,13 +268,15 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, status: &Status) -> Vec<Action
     let mut actions = Vec::new();
     let frame = egui::Frame::central_panel(ui.style()).inner_margin(20);
     egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+        if s.page == Page::Library {
+            header(ui, s, status);
+            ui.add_space(12.0);
+            crate::library_view::draw(ui, s, status, &mut actions);
+            return;
+        }
         egui::ScrollArea::vertical().show(ui, |ui| {
             header(ui, s, status);
             ui.add_space(12.0);
-            if s.page == Page::Library {
-                crate::library_view::draw(ui, s, &mut actions);
-                return;
-            }
             let width = ui.available_width();
             if width >= TWO_COLUMNS_MIN {
                 let gap = 16.0;
@@ -311,6 +313,20 @@ pub fn draw(ui: &mut egui::Ui, s: &mut ViewState, status: &Status) -> Vec<Action
 
 fn header(ui: &mut egui::Ui, s: &mut ViewState, status: &Status) {
     let p = s.palette;
+    if ui.available_width() < 650.0 {
+        ui.label(RichText::new("OmaTuber").size(24.0).strong());
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut s.page, Page::Avatar, "Avatar");
+            let dirty = if s.library.dirty() { " •" } else { "" };
+            ui.selectable_value(
+                &mut s.page,
+                Page::Library,
+                format!("Reações e objetos{dirty}"),
+            );
+            mode_badge(ui, &p, mode(s, status));
+        });
+        return;
+    }
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.label(RichText::new("OmaTuber").size(24.0).strong());
@@ -421,163 +437,258 @@ fn preview_card(ui: &mut egui::Ui, s: &mut ViewState, status: &Status, actions: 
         ui.set_width(ui.available_width());
         ui.label(RichText::new("Prévia do avatar").size(18.0).strong());
         ui.add_space(4.0);
-        let shown = preview_mouth(s, status);
-        let m = mode(s, status);
-        let has_images = s.slots.iter().any(|slot| slot.texture.is_some());
-
-        let width = ui.available_width();
-        let height = (width * 0.62).clamp(220.0, 440.0);
-        let (stage, stage_response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
-        // The stage is painted; describe it for screen readers too.
-        let description = if has_images {
-            format!(
-                "Prévia do avatar: {}",
-                caption_text(shown, m, active_label(s).as_deref())
-            )
-        } else {
-            "Prévia do avatar: Comece pelas imagens".to_owned()
-        };
-        stage_response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, &description));
-        let painter = ui.painter_at(stage);
-        checkerboard(&painter, stage, &p);
-        // Fall back to the other image so a half-configured avatar still shows.
-        let now = ui.input(|i| i.time);
-        // The bounce follows the mouth shown here, as the page follows its own.
-        s.bounce_motion.mouth(shown == Mouth::Open, now);
-        let (lift, flying) = s.bounce_motion.height(s.bounce, now);
-        if flying && s.bounce > 0.0 {
-            ui.ctx().request_repaint();
+        if let Some(action) = preview_stage(ui, s, status, false) {
+            actions.push(action);
         }
-        // The image for this mouth, or the other one if it is missing.
-        let index = if s.slots[shown as usize].texture.is_some() {
-            shown as usize
+        let shown = preview_mouth(s, status);
+        ui.add_space(10.0);
+        thumbnails(ui, s, shown, actions);
+    });
+}
+
+/// Shared geometry for the on-air monitor and the isolated library draft.
+pub(crate) fn preview_stage(
+    ui: &mut egui::Ui,
+    s: &mut ViewState,
+    status: &Status,
+    editing: bool,
+) -> Option<Action> {
+    let p = s.palette;
+    let mut action = None;
+    let shown = if editing {
+        if s.library.preview_talking {
+            Mouth::Open
         } else {
-            1 - shown as usize
-        };
-        // Eyes closed: the blink version of this image, when there is one.
-        let blink = &s.blink_slots[index];
-        let slot = if s.blinking && blink.texture.is_some() {
-            blink
-        } else {
-            &s.slots[index]
-        };
-        // An active sentiment replaces the base, as on the browser source.
-        let base = slot
-            .texture_at(now)
-            .zip(slot.size)
-            .map(|((t, next), size)| {
-                if let Some(next) = next {
-                    ui.ctx().request_repaint_after(next);
-                }
-                (t, size)
-            });
-        let sentiment = sentiment_image(s, shown, now).map(|(t, size, next)| {
+            Mouth::Closed
+        }
+    } else {
+        preview_mouth(s, status)
+    };
+    let m = mode(s, status);
+    let has_images = s.slots.iter().any(|slot| slot.texture.is_some());
+
+    let width = ui.available_width();
+    let height = if editing {
+        (width * 0.7).clamp(120.0, 320.0)
+    } else {
+        (width * 0.62).clamp(220.0, 440.0)
+    };
+    let (stage, stage_response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    // The stage is painted; describe it for screen readers too.
+    let description = if editing {
+        "Composição do rascunho".to_owned()
+    } else if has_images {
+        format!(
+            "Prévia do avatar: {}",
+            caption_text(shown, m, active_label(s).as_deref())
+        )
+    } else {
+        "Prévia do avatar: Comece pelas imagens".to_owned()
+    };
+    stage_response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, &description));
+    let painter = ui.painter_at(stage);
+    checkerboard(&painter, stage, &p);
+    // Fall back to the other image so a half-configured avatar still shows.
+    let now = ui.input(|i| i.time);
+    // The bounce follows the mouth shown here, as the page follows its own.
+    if !editing {
+        s.bounce_motion.mouth(shown == Mouth::Open, now);
+    }
+    let (lift, flying) = if editing {
+        (0.0, false)
+    } else {
+        s.bounce_motion.height(s.bounce, now)
+    };
+    if flying && s.bounce > 0.0 {
+        ui.ctx().request_repaint();
+    }
+    // The image for this mouth, or the other one if it is missing.
+    let index = if s.slots[shown as usize].texture.is_some() {
+        shown as usize
+    } else {
+        1 - shown as usize
+    };
+    // Eyes closed: the blink version of this image, when there is one.
+    let blink = &s.blink_slots[index];
+    let slot = if !editing && s.blinking && blink.texture.is_some() {
+        blink
+    } else {
+        &s.slots[index]
+    };
+    // An active sentiment replaces the base, as on the browser source.
+    let base = slot
+        .texture_at(now)
+        .zip(slot.size)
+        .map(|((t, next), size)| {
             if let Some(next) = next {
                 ui.ctx().request_repaint_after(next);
             }
             (t, size)
         });
-        let inner = stage.shrink(16.0);
-        let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
-        // Same geometry as the browser page (layout.rs): both base images on
-        // one canvas, one scale, the open one shifted by its offset, with room
-        // above for the bounce.
-        let canvas = layout::canvas(s.slots[0].size, s.slots[1].size).map(|c| {
-            let (scale, o) = layout::fit_with_headroom(c, [inner.width(), inner.height()], s.bounce);
-            let size = vec2(c.width as f32, c.height as f32) * scale;
-            let up = lift * size.y;
-            (
-                c,
-                scale,
-                Rect::from_min_size(inner.min + vec2(o[0], o[1] - up), size),
-            )
-        });
-        let drawn = if let Some((texture, [w, h])) = sentiment {
-            // A sentiment fits inside the canvas, centered.
-            let area = canvas.map_or(inner, |(.., r)| r);
-            let scale = (area.width() / w as f32).min(area.height() / h as f32);
-            let rect = Rect::from_center_size(area.center(), vec2(w as f32, h as f32) * scale);
-            painter.image(texture.id(), rect, uv, Color32::WHITE);
-            Some(area)
-        } else if let (Some((texture, size)), Some((c, scale, area))) = (base, canvas) {
-            let offset = if index == Mouth::Open as usize {
-                s.open_offset
-            } else {
-                [0, 0]
-            };
-            let p = layout::place(c, size, offset);
-            let rect = Rect::from_min_size(
-                area.min + vec2(p.x, p.y) * scale,
-                vec2(p.width, p.height) * scale,
-            );
-            painter.image(texture.id(), rect, uv, Color32::WHITE);
-            Some(area)
+    let sentiment = composition_image(s, shown, now, editing).map(|(t, size, next)| {
+        if let Some(next) = next {
+            ui.ctx().request_repaint_after(next);
+        }
+        (t, size)
+    });
+    let inner = stage.shrink(16.0);
+    let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
+    // Same geometry as the browser page (layout.rs): both base images on
+    // one canvas, one scale, the open one shifted by its offset, with room
+    // above for the bounce.
+    let canvas = layout::canvas(s.slots[0].size, s.slots[1].size).map(|c| {
+        let (scale, o) = layout::fit_with_headroom(c, [inner.width(), inner.height()], s.bounce);
+        let size = vec2(c.width as f32, c.height as f32) * scale;
+        let up = lift * size.y;
+        (
+            c,
+            scale,
+            Rect::from_min_size(inner.min + vec2(o[0], o[1] - up), size),
+        )
+    });
+    let drawn = if let Some((texture, [w, h])) = sentiment {
+        // A sentiment fits inside the canvas, centered.
+        let area = canvas.map_or(inner, |(.., r)| r);
+        let scale = (area.width() / w as f32).min(area.height() / h as f32);
+        let rect = Rect::from_center_size(area.center(), vec2(w as f32, h as f32) * scale);
+        painter.image(texture.id(), rect, uv, Color32::WHITE);
+        Some(area)
+    } else if let (Some((texture, size)), Some((c, scale, area))) = (base, canvas) {
+        let offset = if index == Mouth::Open as usize {
+            s.open_offset
         } else {
-            None
+            [0, 0]
         };
-        if let Some(img) = drawn {
-            // Objects: center and width as fractions of the drawn avatar.
-            let lib = &s.library;
-            for id in &lib.objects_on {
-                let Some(o) = lib.applied.object(*id) else {
-                    continue;
-                };
-                let Some(picture) = lib.textures.get(&o.file) else {
-                    continue;
-                };
-                let (tex, next) = picture.at(since(now, lib.objects_since));
-                if let Some(next) = next {
-                    ui.ctx().request_repaint_after(next);
-                }
-                let [ow, oh] = picture.size.map(|v| v as f32);
-                let width = o.scale * img.width();
-                let size = vec2(width, width * oh / ow);
-                let center = img.min + vec2(o.x * img.width(), o.y * img.height());
-                painter.image(
-                    tex.id(),
-                    Rect::from_center_size(center, size),
-                    uv,
-                    Color32::WHITE,
+        let p = layout::place(c, size, offset);
+        let rect = Rect::from_min_size(
+            area.min + vec2(p.x, p.y) * scale,
+            vec2(p.width, p.height) * scale,
+        );
+        painter.image(texture.id(), rect, uv, Color32::WHITE);
+        Some(area)
+    } else {
+        None
+    };
+    if let Some(img) = drawn.or(editing.then_some(inner)) {
+        let lib = &s.library;
+        let library = if editing { &lib.draft } else { &lib.applied };
+        let preview_objects = lib
+            .preview_sentiment
+            .and_then(|id| library.sentiments.iter().find(|item| item.id == id))
+            .map(|item| item.objects.as_slice())
+            .unwrap_or(&[]);
+        let mut moved = None;
+        let objects = library.objects.iter().filter(|_| editing).chain(
+            lib.objects_on
+                .iter()
+                .filter(|_| !editing)
+                .filter_map(|id| library.object(*id)),
+        );
+        for o in objects {
+            let selected = lib.selected == Some(EditorItem::Object(o.id));
+            let visible = if editing {
+                selected || (o.enabled && preview_objects.contains(&o.id))
+            } else {
+                true // Already resolved from the active IDs, in their stacking order.
+            };
+            if !visible {
+                continue;
+            }
+            if editing && lib.file_errors.contains_key(&o.file) {
+                continue;
+            }
+            let Some(picture) = lib.textures.get(&o.file) else {
+                continue;
+            };
+            let (tex, next) = picture.at(if editing {
+                Duration::from_secs_f64(now.max(0.0))
+            } else {
+                since(now, lib.objects_since)
+            });
+            if let Some(next) = next {
+                ui.ctx().request_repaint_after(next);
+            }
+            let [ow, oh] = picture.size.map(|v| v as f32);
+            let width = o.scale * img.width();
+            let size = vec2(width, width * oh / ow);
+            let center = img.min + vec2(o.x * img.width(), o.y * img.height());
+            let rect = Rect::from_center_size(center, size);
+            painter.image(tex.id(), rect, uv, Color32::WHITE);
+            if editing && selected {
+                painter.rect_stroke(rect, 0, Stroke::new(2.0, p.accent), StrokeKind::Inside);
+                let response = ui.interact(
+                    rect.intersect(stage),
+                    ui.scope_id().with(("draft-object", o.id)),
+                    Sense::drag(),
                 );
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::Role::Image,
+                        true,
+                        format!("Mover objeto: {}", o.name),
+                    )
+                });
+                if response.dragged() {
+                    let delta = response.drag_delta();
+                    moved = Some((
+                        o.id,
+                        (o.x + delta.x / img.width()).clamp(-0.5, 1.5),
+                        (o.y + delta.y / img.height()).clamp(-0.5, 1.5),
+                    ));
+                }
             }
         }
-        if has_images {
-            stage_caption(&painter, &p, stage, shown, m, active_label(s).as_deref());
-        } else {
-            painter.text(
-                stage.center() - vec2(0.0, 30.0),
-                Align2::CENTER_CENTER,
-                "Comece pelas imagens",
-                FontId::proportional(20.0),
-                p.foreground,
-            );
+        if let Some((id, x, y)) = moved {
+            if let Some(object) = s.library.draft.objects.iter_mut().find(|o| o.id == id) {
+                object.x = x;
+                object.y = y;
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+    if editing {
+        if drawn.is_none() {
             painter.text(
                 stage.center(),
                 Align2::CENTER_CENTER,
-                "Um PNG para Quieto e outro para Falando",
+                "Escolha uma imagem para a expressão ou a base",
                 FontId::proportional(14.0),
                 p.muted,
             );
-            let buttons =
-                Rect::from_center_size(stage.center() + vec2(0.0, 44.0), vec2(300.0, 36.0));
-            // A child UI does not move this UI's cursor, unlike `scope_builder`.
-            let mut child = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(buttons)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            );
-            if child.add(accent_button(&p, "Escolher imagens")).clicked() && !s.picking {
-                actions.push(Action::Pick(Mouth::Closed));
-            }
-            if child.button("Usar exemplo").clicked() {
-                actions.push(Action::UseExample);
-            }
         }
+    } else if has_images {
+        stage_caption(&painter, &p, stage, shown, m, active_label(s).as_deref());
+    } else {
+        painter.text(
+            stage.center() - vec2(0.0, 30.0),
+            Align2::CENTER_CENTER,
+            "Comece pelas imagens",
+            FontId::proportional(20.0),
+            p.foreground,
+        );
+        painter.text(
+            stage.center(),
+            Align2::CENTER_CENTER,
+            "Um PNG para Quieto e outro para Falando",
+            FontId::proportional(14.0),
+            p.muted,
+        );
+        let buttons = Rect::from_center_size(stage.center() + vec2(0.0, 44.0), vec2(300.0, 36.0));
+        // A child UI does not move this UI's cursor, unlike `scope_builder`.
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(buttons)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        if child.add(accent_button(&p, "Escolher imagens")).clicked() && !s.picking {
+            action = Some(Action::Pick(Mouth::Closed));
+        }
+        if child.button("Usar exemplo").clicked() {
+            action = Some(Action::UseExample);
+        }
+    }
 
-        ui.add_space(10.0);
-        thumbnails(ui, s, shown, actions);
-    });
+    action
 }
 
 /// The active sentiment's image for this mouth, chosen as the browser page
@@ -588,10 +699,29 @@ fn sentiment_image(
     shown: Mouth,
     now: f64,
 ) -> Option<(&TextureHandle, [u32; 2], Option<Duration>)> {
+    composition_image(s, shown, now, false)
+}
+
+fn composition_image(
+    s: &ViewState,
+    shown: Mouth,
+    now: f64,
+    editing: bool,
+) -> Option<(&TextureHandle, [u32; 2], Option<Duration>)> {
     let lib = &s.library;
-    let sentiment = lib.applied.sentiment(lib.active?.0)?;
+    let sentiment = if editing {
+        lib.draft
+            .sentiments
+            .iter()
+            .find(|item| Some(item.id) == lib.preview_sentiment)?
+    } else {
+        lib.applied.sentiment(lib.active?.0)?
+    };
     let talking = sentiment.talking.as_ref().filter(|_| shown == Mouth::Open);
     let file = talking.or(sentiment.quiet.as_ref())?;
+    if editing && lib.file_errors.contains_key(file) {
+        return None;
+    }
     let picture = lib.textures.get(file)?;
     let (texture, next) = picture.at(since(now, lib.active_since));
     Some((texture, picture.size, next))
@@ -860,9 +990,8 @@ fn thumbnails(ui: &mut egui::Ui, s: &mut ViewState, shown: Mouth, actions: &mut 
             .wrap(),
         );
     }
-    // Shown when sizes differ or an offset is already set.
-    let sizes_differ = matches!((s.slots[0].size, s.slots[1].size), (Some(a), Some(b)) if a != b);
-    if sizes_differ || s.open_offset != [0, 0] {
+    // Equal canvas dimensions do not guarantee that the artwork is aligned.
+    if s.slots.iter().all(|slot| slot.size.is_some()) || s.open_offset != [0, 0] {
         ui.horizontal_wrapped(|ui| {
             ui.label("Alinhar a imagem Falando");
             let mut offset = s.open_offset;
@@ -894,6 +1023,11 @@ fn thumbnails(ui: &mut egui::Ui, s: &mut ViewState, shown: Mouth, actions: &mut 
                 .color(p.muted),
         );
     }
+    ui.label(
+        RichText::new("Alterações da base são salvas e enviadas ao OBS automaticamente.")
+            .small()
+            .color(p.muted),
+    );
     bounce_row(ui, s, actions);
     blink_row(ui, s, actions);
 }

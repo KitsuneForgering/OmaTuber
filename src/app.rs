@@ -691,6 +691,7 @@ impl App {
             match msg {
                 LibLoaded::Picked(target, path) => self.view.library.set_file(target, path),
                 LibLoaded::Texture(path, Ok((images, size))) => {
+                    self.view.library.file_errors.remove(&path);
                     let frames = images
                         .into_iter()
                         .enumerate()
@@ -702,8 +703,9 @@ impl App {
                     let picture = crate::library_view::Picture { frames, size };
                     self.view.library.textures.insert(path, picture);
                 }
-                // The reactions task reports the reason next to the item.
-                LibLoaded::Texture(_, Err(_)) => {}
+                LibLoaded::Texture(path, Err(error)) => {
+                    self.view.library.file_errors.insert(path, error);
+                }
             }
         }
         #[cfg(feature = "sound")]

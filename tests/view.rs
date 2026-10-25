@@ -241,14 +241,14 @@ mod library_editor {
         assert!(h.state().0.library.dirty());
         assert!(h.state().1.is_empty(), "nothing sent before Aplicar");
 
-        h.get_by_label("Desfazer").click();
+        h.get_by_label("Descartar alterações").click();
         h.run();
         assert!(!h.state().0.library.dirty());
         assert!(h.state().0.library.draft.sentiments.is_empty());
 
         h.get_by_label("Adicionar sentimento").click();
         h.run();
-        h.get_by_label("Aplicar").click();
+        h.get_by_label("Aplicar ao OBS").click();
         h.run();
         assert_eq!(h.state().1, [Action::ApplyLibrary]);
     }
@@ -263,15 +263,159 @@ mod library_editor {
         });
         h.get_by_label("Adicionar sentimento").click();
         h.run();
-        // Two "Mostrar agora" buttons: the applied one works, the new one is disabled.
-        let buttons = h.get_all_by_label("Mostrar agora").collect::<Vec<_>>();
-        assert_eq!(buttons.len(), 2);
-        buttons[1].click();
+        h.get_by_label("Mostrar no OBS").click();
         h.run();
-        assert!(h.state().1.is_empty());
-        h.get_all_by_label("Mostrar agora").next().unwrap().click();
+        assert!(h.state().1.is_empty(), "new draft cannot go on air");
+        h.get_by_label("Editar expressão: Animado").click();
+        h.run();
+        h.get_by_label("Mostrar no OBS").click();
         h.run();
         assert_eq!(h.state().1, [Action::TriggerSentiment(id)]);
+    }
+
+    #[test]
+    fn preview_and_dirty_item_never_trigger_the_applied_version() {
+        let expression = Sentiment::new("Animado");
+        let mut h = harness_on_library(Library {
+            sentiments: vec![expression],
+            objects: vec![],
+        });
+        let applied = h.state().0.library.applied.clone();
+        h.state_mut().0.library.draft.sentiments[0].name = "Rascunho".to_owned();
+        h.run();
+        h.get_by_label("Falando").click();
+        h.run();
+        assert!(h.state().0.library.preview_talking);
+        h.get_by_label("Mostrar no OBS").click();
+        h.run();
+        assert!(h.state().1.is_empty());
+        assert_eq!(h.state().0.library.applied, applied);
+        h.get_by_label("Descartar alterações").click();
+        h.run();
+        assert_eq!(h.state().0.library.draft, applied);
+    }
+
+    #[test]
+    fn draft_preview_renders_the_new_talking_image_without_showing_the_live_one() {
+        use eframe::egui::{Color32, ColorImage, TextureOptions, epaint::Shape};
+        use omatuber::library_view::Picture;
+        let mut expression = Sentiment::new("Animado");
+        expression.quiet = Some("live.png".into());
+        let mut view = state();
+        view.page = Page::Library;
+        view.library.active = Some((expression.id, Source::Manual));
+        view.library.applied.sentiments.push(expression.clone());
+        expression.quiet = Some("draft-quiet.png".into());
+        expression.talking = Some("draft-talking.png".into());
+        view.library.draft.sentiments.push(expression);
+        let mut h = Harness::builder()
+            .with_size([1100.0, 760.0])
+            .build_ui_state(
+                |ui, (s, actions): &mut (ViewState, Vec<Action>)| {
+                    if s.library.textures.is_empty() {
+                        for name in ["live.png", "draft-quiet.png", "draft-talking.png"] {
+                            let texture = ui.ctx().load_texture(
+                                name,
+                                ColorImage::new([10, 10], vec![Color32::WHITE; 100]),
+                                TextureOptions::LINEAR,
+                            );
+                            s.library.textures.insert(
+                                name.into(),
+                                Picture {
+                                    frames: vec![(texture, Duration::ZERO)],
+                                    size: [10, 10],
+                                },
+                            );
+                        }
+                    }
+                    actions.extend(view::draw(ui, s, &idle()));
+                },
+                (view, Vec::new()),
+            );
+        h.run();
+        h.get_by_label("Falando").click();
+        h.run();
+        fn uses(shape: &Shape, texture: eframe::egui::TextureId) -> bool {
+            match shape {
+                Shape::Mesh(mesh) => mesh.texture_id == texture,
+                Shape::Vec(shapes) => shapes.iter().any(|s| uses(s, texture)),
+                _ => false,
+            }
+        }
+        let texture = |name: &str| {
+            h.state().0.library.textures[std::path::Path::new(name)]
+                .first()
+                .id()
+        };
+        assert!(
+            h.output()
+                .shapes
+                .iter()
+                .any(|s| uses(&s.shape, texture("draft-talking.png")))
+        );
+        assert!(
+            !h.output()
+                .shapes
+                .iter()
+                .any(|s| uses(&s.shape, texture("live.png")))
+        );
+        assert!(h.state().1.is_empty());
+    }
+
+    #[test]
+    fn object_drag_changes_only_the_draft_and_discard_restores_it() {
+        use eframe::egui::{self, Color32, ColorImage, TextureOptions};
+        use omatuber::library::Object;
+        use omatuber::library_view::{EditorItem, Picture};
+        let object = Object::new("Óculos", "glasses.png".into());
+        let id = object.id;
+        let mut view = state();
+        view.page = Page::Library;
+        view.library.applied.objects.push(object.clone());
+        view.library.draft.objects.push(object);
+        view.library.selected = Some(EditorItem::Object(id));
+        let mut h = Harness::builder()
+            .with_size([1100.0, 760.0])
+            .build_ui_state(
+                |ui, (s, actions): &mut (ViewState, Vec<Action>)| {
+                    if s.library.textures.is_empty() {
+                        let texture = ui.ctx().load_texture(
+                            "glasses",
+                            ColorImage::new([20, 10], vec![Color32::RED; 200]),
+                            TextureOptions::LINEAR,
+                        );
+                        s.library.textures.insert(
+                            "glasses.png".into(),
+                            Picture {
+                                frames: vec![(texture, Duration::ZERO)],
+                                size: [20, 10],
+                            },
+                        );
+                    }
+                    actions.extend(view::draw(ui, s, &idle()));
+                },
+                (view, Vec::new()),
+            );
+        h.run();
+        let bounds = h.get_by_label("Mover objeto: Óculos").rect();
+        let center = bounds.center();
+        h.hover_at(center);
+        h.run();
+        h.drag_at(center);
+        h.run_steps(1);
+        let end = center + egui::vec2(45.0, 25.0);
+        h.hover_at(end);
+        h.run_steps(2);
+        h.drop_at(end);
+        h.run();
+        let draft = &h.state().0.library.draft.objects[0];
+        assert!(draft.x > 0.5 && draft.y > 0.5, "drag must move the object");
+        assert_eq!(h.state().0.library.applied.objects[0].x, 0.5);
+        assert_eq!(h.state().0.library.applied.objects[0].y, 0.5);
+        assert!(h.state().1.is_empty(), "no OBS command during drag");
+        h.get_by_label("Descartar alterações").click();
+        h.run();
+        assert_eq!(h.state().0.library.draft, h.state().0.library.applied);
     }
 
     #[test]
@@ -299,7 +443,9 @@ mod library_editor {
             sentiments: vec![s],
             objects: vec![obj],
         });
-        h.get_all_by_label("Remover").last().unwrap().click();
+        h.get_by_label("Editar objeto: Caneca").click();
+        h.run();
+        h.get_by_label("Remover").click();
         h.run();
         let draft = &h.state().0.library.draft;
         assert!(draft.objects.is_empty());
@@ -399,6 +545,8 @@ mod teaching {
         });
         h.state_mut().0.library.draft = lib.clone();
         h.state_mut().0.library.applied = lib;
+        h.run();
+        h.get_by_label("Duração e gatilhos").click();
         h.run();
         h.get_by_label("Fica enquanto o som continuar e mais 1,5 s depois.");
     }
@@ -739,6 +887,16 @@ fn alignment_control_appears_for_different_sizes_and_resets() {
 }
 
 #[test]
+fn equal_size_images_still_offer_alignment() {
+    let mut h = harness(idle());
+    h.state_mut().0.slots[0].size = Some([512, 512]);
+    h.state_mut().0.slots[1].size = Some([512, 512]);
+    h.run();
+    h.get_by_label("Alinhar a imagem Falando");
+    h.get_by_label("Centralizar");
+}
+
+#[test]
 fn blink_row_picks_and_removes() {
     let mut h = harness(idle());
     h.run();
@@ -772,6 +930,8 @@ fn silence_trigger_can_be_set_per_sentiment() {
         s.library.draft = lib.clone();
         s.library.applied = lib;
     }
+    h.run();
+    h.get_by_label("Duração e gatilhos").click();
     h.run();
     h.get_by_label("Aparece após silêncio").click();
     h.run();

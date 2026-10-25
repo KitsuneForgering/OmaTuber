@@ -287,6 +287,34 @@ fn main() {
         images: true,
     });
 
+    // The editor must remain usable at the normal window size and when narrow.
+    let editor_library = scenes.last().unwrap().state.library.applied.clone();
+    for (name, size) in [
+        ("10-editor-object", [1100.0, 760.0]),
+        ("11-editor-narrow", [520.0, 900.0]),
+    ] {
+        scenes.push(Scene {
+            name,
+            size,
+            status: live(-17.0, Mouth::Open),
+            state: ViewState {
+                page: Page::Library,
+                library: LibraryView {
+                    selected: editor_library
+                        .objects
+                        .first()
+                        .map(|o| omatuber::library_view::EditorItem::Object(o.id)),
+                    preview_sentiment: editor_library.sentiments.first().map(|s| s.id),
+                    draft: editor_library.clone(),
+                    applied: editor_library.clone(),
+                    ..Default::default()
+                },
+                ..configured()
+            },
+            images: true,
+        });
+    }
+
     for scene in scenes {
         let Scene {
             name,
